@@ -1397,12 +1397,14 @@ app.post('/api/templates/finalize', async (req: Request, res: Response) => {
       res.json({ ok: true, webUrl: od.webUrl, name: headerSafeName(safeName) + '.xlsx' }); return;
     }
     if (action === 'pdf') {
-      // Simple documentation PDF: sheet values laid out row by row (not a pixel-exact Excel render)
+      // Simple documentation PDF: sheet values laid out row by row (not a pixel-exact Excel render).
+      // Rendered to a BUFFER, never piped into res: an exception mid-pipe used to double-write the
+      // response and crash the whole process with ERR_STREAM_WRITE_AFTER_END.
       const PDFDocument = require('pdfkit');
       const doc = new PDFDocument({ size: 'LETTER', margin: 36 });
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName(safeName)}.pdf"`);
-      doc.pipe(res);
+      const chunks: Buffer[] = [];
+      doc.on('data', (c: Buffer) => chunks.push(c));
+      const done = new Promise<Buffer>((resolve, reject) => { doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject); });
       doc.fontSize(14).text(safeName, { underline: true }).moveDown(0.5);
       wb.eachSheet(ws => {
         if (ws.state !== 'visible') return;
@@ -1412,14 +1414,19 @@ app.post('/api/templates/finalize', async (req: Request, res: Response) => {
           const vals: string[] = [];
           row.eachCell({ includeEmpty: false }, c => {
             if (c.isMerged && c.master.address !== c.address) return;
-            const v = (() => { try { return c.text; } catch { return String(c.value ?? ''); } })().replace(/\s+/g, ' ').trim();
-            if (v) vals.push(v);
+            let v: unknown; try { v = c.text; } catch { v = c.value; }
+            const s = String(v ?? '').replace(/\s+/g, ' ').trim(); // cell.text can return non-strings
+            if (s) vals.push(s);
           });
           if (vals.length) doc.text(vals.join('   |   '), { width: 540 });
         });
         doc.moveDown(1);
       });
-      doc.end(); return;
+      doc.end();
+      const pdf = await done;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName(safeName)}.pdf"`);
+      res.send(pdf); return;
     }
     if (action === 'sharepoint') {
       // Save next to the template it was made from — needs write permission on the Entra app
@@ -1832,6 +1839,10 @@ app.post('/api/buyout-board', async (req: Request, res: Response) => {
 });
 
 const port = Number(process.env.PORT) || 3000;
+// Last-resort guards: log instead of dying, so one bad request never kills the server for the team
+process.on('uncaughtException', e => console.error('[uncaughtException]', e));
+process.on('unhandledRejection', e => console.error('[unhandledRejection]', e));
+
 app.listen(port, () => {
   console.log(`Straticon Pre-Con running → http://localhost:${port}`);
   // Windows/Mac colleagues on the office network use this address:
