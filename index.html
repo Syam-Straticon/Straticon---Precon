@@ -1875,7 +1875,7 @@ async function openTemplates(projectOverride){
 function fbRenderInto(el,items){ el.innerHTML=''; items.forEach(i=>el.appendChild(i)); }
 tplEls.tplBack.addEventListener('click',()=>tplShow(tplState.step-1));
 document.getElementById('tplClose').addEventListener('click',()=>tplOverlay.classList.remove('show'));
-tplOverlay.addEventListener('click',e=>{ if(e.target===tplOverlay) tplOverlay.classList.remove('show'); });
+// No backdrop-click close: a stray click outside must not throw away a fill in progress — only the Close button ends it.
 
 tplEls.tplFill.addEventListener('click',async()=>{
   const f=tplState.chosen; if(!f)return;
