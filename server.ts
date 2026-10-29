@@ -938,6 +938,50 @@ app.delete('/api/chats/:id', (req: Request, res: Response) => {
   catch { res.status(404).json({ error: 'Chat not found' }); }
 });
 
+// ---------- Your data (claude.ai style): everything Straticon ai stores on this machine, per account ----------
+function userDataSummary(u: UserRec) {
+  const projects = loadProjects().filter(p => u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id));
+  const names = new Set(projects.map(p => p.name));
+  const chats = fs.readdirSync(CHATS_DIR).filter(f => f.endsWith('.json')).flatMap(f => {
+    try { return [JSON.parse(fs.readFileSync(path.join(CHATS_DIR, f), 'utf8')) as StoredChat]; } catch { return []; }
+  }).filter(c => !c.project || names.has(c.project));
+  const bids = loadBids().filter(b => names.has(b.project));
+  const docs = fs.readdirSync(DOCS_DIR).filter(f => f.endsWith('.json')).flatMap(f => {
+    try { const d = JSON.parse(fs.readFileSync(path.join(DOCS_DIR, f), 'utf8')) as GenDoc;
+      return [{ id: f.slice(0, -5), title: d.title, project: d.project, at: d.at }]; } catch { return []; }
+  }).filter(d => !d.project || names.has(d.project));
+  return { projects, chats, bids, docs };
+}
+app.get('/api/account/data', (req: Request, res: Response) => {
+  const u = reqUser(req);
+  const { projects, chats, bids, docs } = userDataSummary(u);
+  res.json({
+    account: { name: u.name, email: u.email, role: u.role, createdAt: u.createdAt,
+      access: (u.role === 'admin' || u.projectIds === '*') ? 'All projects' : (u.projectIds as string[]).length + ' project(s)' },
+    dataDir: __dirname,
+    projects: projects.map(p => ({ name: p.name, knowledgeFiles: p.knowledge.length,
+      knowledgeChars: p.knowledge.reduce((a, k) => a + (k.text || '').length, 0), hasInstructions: !!p.instructions })),
+    chats: chats.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+      .map(c => ({ id: c.id, title: c.title, project: c.project, messages: c.messages.length, updatedAt: c.updatedAt })),
+    bidRecords: bids.map(b => ({ project: b.project, trade: b.trade, bidder: b.bidder, createdAt: b.createdAt })),
+    documents: docs.sort((a, b) => b.at - a.at).map(d => ({ title: d.title, project: d.project, at: new Date(d.at).toISOString() }))
+  });
+});
+// One-file export of everything the account can see — full chats, knowledge, records, document texts
+app.get('/api/account/export', (req: Request, res: Response) => {
+  const u = reqUser(req);
+  const { projects, chats, bids, docs } = userDataSummary(u);
+  const full = {
+    exportedAt: new Date().toISOString(),
+    account: { name: u.name, email: u.email, role: u.role, createdAt: u.createdAt },
+    projects, chats, bidRecords: bids,
+    documents: docs.map(d => { try { return { id: d.id, ...(JSON.parse(fs.readFileSync(genDocFile(d.id), 'utf8')) as GenDoc) }; } catch { return d; } })
+  };
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName('Straticon ai export ' + new Date().toISOString().slice(0, 10))}.json"`);
+  res.send(JSON.stringify(full, null, 1));
+});
+
 // ---------- Autodesk APS: 2-legged token (cached) ----------
 let apsToken: string | null = null;
 let apsExpiry = 0;

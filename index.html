@@ -260,6 +260,9 @@ body.sidebar-pinned .shell{grid-template-columns:268px 1fr}
 .adm-projects{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:9px}
 .adm-projects label{display:flex;align-items:center;gap:5px;font-size:.76rem;color:var(--muted);cursor:pointer}
 .adm-temp{margin-top:8px;font:500 .8rem var(--mono);color:var(--accent);background:var(--accent-soft);border-radius:7px;padding:6px 10px;word-break:break-all}
+.kv{display:flex;align-items:baseline;gap:12px;padding:7px 0;border-bottom:1px solid var(--line-soft);font:400 .8rem var(--ui)}
+.kv>span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.kv>span:last-child{flex:none;color:var(--faint);font-size:.74rem;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .connrow{display:flex;align-items:flex-start;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-soft)}
 .connrow:last-of-type{border-bottom:none}
 .connrow .bchip{margin-top:2px;flex:none}
@@ -696,6 +699,7 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
       <button type="button" class="set-tab active" data-tab="profile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.5-3.5 4-5 7.5-5s6 1.5 7.5 5"/></svg>Profile</button>
       <button type="button" class="set-tab" data-tab="connectors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/></svg>Connectors</button>
       <button type="button" class="set-tab" data-tab="security"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Security</button>
+      <button type="button" class="set-tab" data-tab="data"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><ellipse cx="12" cy="5.5" rx="7" ry="2.8"/><path d="M5 5.5v13c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-13M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8"/></svg>Your data</button>
       <button type="button" class="set-tab" id="setAdminTab" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="9" cy="8" r="3"/><path d="M3 20c1-3 3.2-4.5 6-4.5s5 1.5 6 4.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17.5 15.6c2 .4 3.1 1.7 3.7 4"/></svg>People &amp; access</button>
     </nav>
     <div class="set-body">
@@ -712,6 +716,11 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
         <h3>Connectors</h3>
         <p class="hint">What Straticon ai is wired to. Org connectors are configured by your admin; OneDrive saves go to your own account.</p>
         <div id="acConnectors">Checking connections…</div>
+      </section>
+      <section class="set-pane" data-pane="data" hidden>
+        <h3>Your data</h3>
+        <p class="hint">Everything Straticon ai stores on this server that your account can see. Nothing lives in the browser.</p>
+        <div id="acData"><div class="pp-empty">Loading…</div></div>
       </section>
       <section class="set-pane" data-pane="security" hidden>
         <h3>Security</h3>
@@ -1983,6 +1992,39 @@ const acctOverlay=document.getElementById('acctOverlay');
 function setTab(name){
   document.querySelectorAll('.set-tab[data-tab]').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   document.querySelectorAll('.set-pane').forEach(p=>p.hidden=p.dataset.pane!==name);
+  if(name==='data') loadAcctData();
+}
+// "Your data": everything stored server-side that this account can see, with a one-file export
+let acctDataLoaded=false;
+async function loadAcctData(){
+  if(acctDataLoaded) return;
+  const box=document.getElementById('acData');
+  try{
+    const d=await j('/api/account/data');
+    acctDataLoaded=true;
+    const kv=(l,r)=>'<div class="kv"><span>'+esc(String(l))+'</span><span>'+esc(String(r))+'</span></div>';
+    const list=(items,fmt)=>{
+      if(!items.length) return '<div class="pp-empty">None yet.</div>';
+      let h=items.slice(0,10).map(fmt).join('');
+      if(items.length>10) h+='<div class="pp-cap">… and '+(items.length-10)+' more — all included in the export</div>';
+      return h;
+    };
+    box.innerHTML=
+      '<div class="addrow" style="justify-content:flex-start;margin:0 0 10px"><button type="button" class="pact primary" id="acExport">Download everything (.json)</button></div>'
+      +kv('Name',d.account.name)+kv('Email',d.account.email)+kv('Role',d.account.role)
+      +kv('Project access',d.account.access)+kv('Member since',(d.account.createdAt||'').slice(0,10)||'—')
+      +kv('Stored at',d.dataDir)
+      +'<div class="msec">Chats ('+d.chats.length+')</div>'
+      +list(d.chats,c=>kv(c.title,(c.project?c.project+' · ':'')+c.messages+' msgs · '+(c.updatedAt||'').slice(0,10)))
+      +'<div class="msec">Projects ('+d.projects.length+')</div>'
+      +list(d.projects,p=>kv(p.name,p.knowledgeFiles+' knowledge file'+(p.knowledgeFiles===1?'':'s')+(p.hasInstructions?' · instructions':'')))
+      +'<div class="msec">Bid records ('+d.bidRecords.length+')</div>'
+      +list(d.bidRecords,b=>kv(b.bidder+' — '+b.trade,b.project))
+      +'<div class="msec">Generated documents ('+d.documents.length+')</div>'
+      +list(d.documents,g=>kv(g.title,(g.project?g.project+' · ':'')+(g.at||'').slice(0,10)))
+      +'<div class="pp-cap" style="margin-top:12px">Chats and bid records are shared across the team today; this lists what your project access lets you see. Generated documents sweep after 30 days.</div>';
+    document.getElementById('acExport').addEventListener('click',()=>dlAuthed('/api/account/export','Straticon ai export.json').catch(e=>{ box.insertAdjacentHTML('afterbegin','<div class="autherr">'+esc(e.message)+'</div>'); }));
+  }catch(e){ box.innerHTML='<div class="pp-empty">'+esc(e.message)+'</div>'; }
 }
 document.querySelectorAll('.set-tab[data-tab]').forEach(t=>t.addEventListener('click',()=>setTab(t.dataset.tab)));
 document.getElementById('setAdminTab').addEventListener('click',()=>{ acctOverlay.classList.remove('show'); loadAdmin(); });
@@ -1993,6 +2035,7 @@ function openAcct(forcePw){
   document.getElementById('acMsg').textContent='';
   document.getElementById('acErr').textContent=forcePw?'Your password was reset by an admin — set a new one to continue.':'';
   document.getElementById('setAdminTab').style.display=ME.role==='admin'?'':'none';
+  acctDataLoaded=false; document.getElementById('acData').innerHTML='<div class="pp-empty">Loading…</div>';
   setTab(forcePw?'security':'profile');
   acctOverlay.classList.add('show');
   loadConnectors();
