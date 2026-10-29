@@ -87,14 +87,17 @@ body.sidebar-pinned .shell{grid-template-columns:268px 1fr}
 .logo .brand{display:flex;align-items:baseline;gap:6px;font-weight:600;font-size:1.02rem;letter-spacing:-.02em}
 .logo .brand small{font-weight:500;font-size:.68rem;color:var(--accent);background:var(--accent-soft);border-radius:5px;padding:1px 6px}
 .logo .ws{font-size:.74rem;color:var(--faint);margin-top:3px;letter-spacing:.01em}
-.newchat{display:flex;align-items:center;gap:9px;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:8px 11px;font:500 .86rem var(--ui);color:var(--fg);cursor:pointer;text-align:left;transition:border-color .15s,box-shadow .15s}
-.newchat:hover{border-color:var(--accent-dim);box-shadow:0 0 0 1px var(--accent-dim)}
-.newchat .nicon{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;color:var(--accent)}
+.newchat{display:flex;align-items:center;gap:9px;background:linear-gradient(180deg,var(--accent),var(--accent-dim));border:1px solid transparent;border-radius:9px;padding:8px 11px;font:600 .86rem var(--ui);color:var(--btn-fg);cursor:pointer;text-align:left;transition:box-shadow .15s,transform .13s}
+.newchat:hover{box-shadow:0 4px 14px var(--accent-soft),0 3px 10px rgba(0,0,0,.28);transform:translateY(-1px)}
+.newchat:active{transform:none}
+.newchat .nicon{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .nav{display:flex;flex-direction:column;gap:1px;margin-top:14px}
 .nav a{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:.86rem;font-weight:450;transition:background .12s,color .12s}
 .nav a:hover{background:var(--raise);color:var(--fg)}
+.nav a.active{background:var(--raise);color:var(--fg);font-weight:500;box-shadow:inset 2px 0 0 var(--accent)}
 .nav a svg{width:15.5px;height:15.5px;flex:none;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;opacity:.85}
-.side h4{font:600 .66rem var(--ui);letter-spacing:.09em;text-transform:uppercase;color:var(--faint);margin:20px 10px 7px}
+.side h4{font:600 .66rem var(--ui);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:20px 10px 7px;display:flex;align-items:center;gap:10px}
+.side h4::after{content:"";flex:1;height:1px;background:var(--line-soft)} /* title-block rule line, same as page headers */
 .projlist{display:flex;flex-direction:column;gap:1px;overflow-y:auto;min-height:0;scrollbar-width:thin}
 .proj{border-radius:8px}
 .proj summary{display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:7px;color:var(--muted);font-size:.84rem;cursor:pointer;list-style:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .12s,color .12s}
@@ -262,7 +265,7 @@ body.sidebar-pinned .shell{grid-template-columns:268px 1fr}
 .connrow .bchip{margin-top:2px;flex:none}
 .connmeta b{display:block;font-size:.84rem}
 .connmeta span{font-size:.73rem;color:var(--faint);line-height:1.45}
-.me{margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px;border:none;border-top:1px solid var(--line-soft);background:none;width:100%;text-align:left;cursor:pointer;border-radius:0 0 0 0;font-family:var(--ui);color:var(--fg);transition:background .12s}
+.me{margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px;border:none;border-top:1px solid var(--line-soft);background:none;width:100%;text-align:left;cursor:pointer;border-radius:10px 10px 0 0;font-family:var(--ui);color:var(--fg);transition:background .12s}
 .me:hover{background:var(--raise)}
 .me .mechev{width:14px;height:14px;margin-left:auto;flex:none;stroke:var(--faint);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 /* Account popover */
@@ -952,6 +955,7 @@ function showView(v){
   footEl.style.display=(v==='chat'&&!document.getElementById('chatlog'))?'':'none';
   projPage.style.display=v==='projects'?'':'none';
   projDetail.style.display=v==='detail'?'':'none';
+  document.getElementById('navProjects').classList.toggle('active',v==='projects'||v==='detail');
   // Remember where the user is, so a reload comes back to the same view
   try{
     localStorage.setItem('precon.view',v);
