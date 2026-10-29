@@ -1311,7 +1311,7 @@ app.get('/api/templates', async (req: Request, res: Response) => {
 });
 
 // In-progress fills: template bytes + metadata, kept half an hour
-const fills = new Map<string, { buf: Buffer; name: string; driveId: string; itemId: string; at: number }>();
+const fills = new Map<string, { buf: Buffer; name: string; driveId: string; itemId: string; project: string | null; at: number }>();
 setInterval(() => { const cut = Date.now() - 30 * 60_000; for (const [k, v] of fills) if (v.at < cut) fills.delete(k); }, 5 * 60_000).unref();
 
 interface TplEdit { sheet: string; cell: string; label: string; value: string }
@@ -1359,12 +1359,47 @@ app.post('/api/templates/fill', async (req: Request, res: Response) => {
     try { edits = JSON.parse(jsonStr); } catch { res.status(502).json({ error: 'The model did not return valid edits — try rephrasing the info.' }); return; }
 
     const fillId = crypto.randomUUID();
-    fills.set(fillId, { buf, name, driveId, itemId, at: Date.now() });
+    fills.set(fillId, { buf, name, driveId, itemId, project: project || null, at: Date.now() });
     res.json({ fillId, edits });
   } catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
 
 // Finalize: apply (possibly user-adjusted) edits, then download as .xlsx/.pdf or save to SharePoint
+// ---------- Scope sheets: finalized template fills, kept per project like chat history ----------
+const SHEETS_DIR = path.join(__dirname, '.scopesheets');
+fs.mkdirSync(SHEETS_DIR, { recursive: true });
+interface SheetMeta { id: string; project: string | null; fileName: string; template: string; cells: number; lastAction: string; by: string; createdAt: string }
+app.get('/api/scopesheets', (req: Request, res: Response) => {
+  const project = String(req.query.project || '');
+  if (!project) { res.status(400).json({ error: 'project required' }); return; }
+  if (!canAccess(reqUser(req), project)) { res.status(403).json({ error: 'No access to this project' }); return; }
+  const sheets = fs.readdirSync(SHEETS_DIR).filter(f => f.endsWith('.json')).flatMap(f => {
+    try { return [JSON.parse(fs.readFileSync(path.join(SHEETS_DIR, f), 'utf8')) as SheetMeta]; } catch { return []; }
+  }).filter(s => s.project === project).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  res.json({ sheets });
+});
+app.get('/api/scopesheets/:id/xlsx', (req: Request, res: Response) => {
+  try {
+    if (!/^[0-9a-f-]{36}$/.test(req.params.id)) throw new Error('bad id');
+    const meta = JSON.parse(fs.readFileSync(path.join(SHEETS_DIR, req.params.id + '.json'), 'utf8')) as SheetMeta;
+    if (meta.project && !canAccess(reqUser(req), meta.project)) { res.status(403).json({ error: 'No access to this project' }); return; }
+    const buf = fs.readFileSync(path.join(SHEETS_DIR, req.params.id + '.xlsx'));
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName(meta.fileName || 'scope')}.xlsx"`);
+    res.send(buf);
+  } catch { res.status(404).json({ error: 'Scope sheet not found' }); }
+});
+app.delete('/api/scopesheets/:id', (req: Request, res: Response) => {
+  try {
+    if (!/^[0-9a-f-]{36}$/.test(req.params.id)) throw new Error('bad id');
+    const meta = JSON.parse(fs.readFileSync(path.join(SHEETS_DIR, req.params.id + '.json'), 'utf8')) as SheetMeta;
+    if (meta.project && !canAccess(reqUser(req), meta.project)) { res.status(403).json({ error: 'No access to this project' }); return; }
+    fs.unlinkSync(path.join(SHEETS_DIR, req.params.id + '.json'));
+    try { fs.unlinkSync(path.join(SHEETS_DIR, req.params.id + '.xlsx')); } catch { /* meta only */ }
+    res.json({ ok: true });
+  } catch { res.status(404).json({ error: 'Scope sheet not found' }); }
+});
+
 app.post('/api/templates/finalize', async (req: Request, res: Response) => {
   try {
     const { fillId, edits, action, fileName } = req.body as { fillId: string; edits: TplEdit[]; action: 'xlsx' | 'pdf' | 'sharepoint' | 'onedrive'; fileName: string };
@@ -1385,6 +1420,18 @@ app.post('/api/templates/finalize', async (req: Request, res: Response) => {
       } catch { /* skip bad addresses */ }
     }
     const out = Buffer.from(await wb.xlsx.writeBuffer());
+
+    // Keep the finished sheet on the project page ("Scope sheets", like chat history).
+    // Keyed by fillId, so re-finalizing the same fill updates one record instead of duplicating.
+    try {
+      if (/^[0-9a-f-]{36}$/.test(fillId)) {
+        fs.writeFileSync(path.join(SHEETS_DIR, fillId + '.xlsx'), new Uint8Array(out));
+        fs.writeFileSync(path.join(SHEETS_DIR, fillId + '.json'), JSON.stringify({
+          id: fillId, project: fill.project, fileName: headerSafeName(safeName), template: fill.name,
+          cells: (edits ?? []).length, lastAction: action, by: reqUser(req).name, createdAt: new Date().toISOString()
+        }));
+      }
+    } catch (e) { console.error('[scopesheets] save failed:', (e as Error).message); }
 
     if (action === 'xlsx') {
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

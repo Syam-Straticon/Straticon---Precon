@@ -94,7 +94,12 @@ with bid review, bid leveling, scope tracing, and drafting GMP contract exhibits
     template's SharePoint folder — the SharePoint save needs the Entra app upgraded to
     Sites.ReadWrite.All (admin consent); it is read-only today and returns a clear 403 message).
     UI: + on the composer → menu (attach file / use template) → modal: pick → form+paste → review
-    editable proposed values → Download .xlsx / Download PDF / Save to SharePoint (filename prompted).
+    editable proposed values → Download .xlsx / Download PDF / Save to SharePoint (filename prompted);
+    the dialog never closes on backdrop click (only Close), steps scroll so the action row stays pinned.
+    SCOPE SHEETS: every finalize also persists the filled workbook to `.scopesheets/` keyed by fillId
+    (re-finalizing updates, not duplicates) with meta {project,fileName,template,cells,lastAction,by};
+    GET /api/scopesheets?project= (ACL), GET /:id/xlsx, DELETE /:id — shown as a "Scope sheets" list
+    on the project page (click to re-download, armed delete), like chat history.
   - `POST /api/extract?name=` (raw bytes ≤80 MB) → extractText for LOCAL uploads; the + menu's
     "Add Files & Photos" sends PDFs/Excel there, reads txt/md/csv/json/log client-side, and attaches
     photos (png/jpeg/gif/webp, ≤5 MB each, max 10) as base64 — image thumbnails in the composer,

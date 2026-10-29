@@ -556,6 +556,7 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
       <div class="pp-cols">
         <div class="pp-sec">
           <h4>Chats in this project</h4><div id="pdChats"></div>
+          <h4 style="margin-top:22px">Scope sheets</h4><div id="pdSheets"></div>
           <h4 style="margin-top:22px">Bid records &amp; leveling</h4><div id="pdRecords"></div>
         </div>
         <div class="pp-sec pp-know">
@@ -1123,11 +1124,35 @@ async function openProjectDetail(id){
     });
     if(!mine.length) cbox.innerHTML='<div class="pp-empty">No chats yet — click "Work in this project" to start one.</div>';
   }catch(_){}
+  loadPdSheets();
   loadPdRecords();
   document.getElementById('pdBoard').innerHTML='';
   document.getElementById('pdBoardMeta').textContent='';
   document.getElementById('pdBoardBtn').textContent='Load board';
   showView('detail');
+}
+// Scope sheets: finalized template fills kept on the project page, like chat history
+async function loadPdSheets(){
+  const box=document.getElementById('pdSheets'); box.innerHTML='';
+  try{
+    const d=await j('/api/scopesheets?project='+encodeURIComponent(curProj.name));
+    if(!d.sheets.length){ box.innerHTML='<div class="pp-empty">No scope sheets yet — fill one via + → Use a scope template.</div>'; return; }
+    d.sheets.forEach(s=>{
+      const r=document.createElement('div'); r.className='pp-chatrow';
+      r.title='From '+s.template+' · '+s.cells+' values · last output: '+s.lastAction;
+      r.innerHTML='<span>'+esc(s.fileName)+'.xlsx</span><small>'+esc(s.by||'')+' · '+esc((s.createdAt||'').slice(0,10))+'</small>';
+      r.addEventListener('click',()=>dlAuthed('/api/scopesheets/'+s.id+'/xlsx',s.fileName+'.xlsx').catch(()=>{}));
+      const x=document.createElement('button'); x.className='pp-chatdel'; x.innerHTML=ICONS.trash; x.title='Delete scope sheet';
+      x.addEventListener('click',async e=>{
+        e.stopPropagation();
+        if(x.dataset.armed!=='1'){ x.dataset.armed='1'; x.classList.add('armed'); x.title='Click again to delete permanently';
+          setTimeout(()=>{x.dataset.armed='';x.classList.remove('armed');x.title='Delete scope sheet';},6000); return; }
+        try{ await fetch('/api/scopesheets/'+s.id,{method:'DELETE'}); }catch(_){}
+        loadPdSheets();
+      });
+      r.appendChild(x); box.appendChild(r);
+    });
+  }catch(e){ box.innerHTML='<div class="pp-empty">'+esc(e.message)+'</div>'; }
 }
 // Bid records grouped by trade, with per-record Excel and a leveling sheet per trade
 async function dlAuthed(url,fallbackName){
