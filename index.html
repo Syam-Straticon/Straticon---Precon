@@ -370,8 +370,11 @@ body.sidebar-pinned .shell{grid-template-columns:268px 1fr}
 .tplform input,.tplform textarea{background:var(--surface);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:7px 10px;font:400 .86rem var(--ui);outline:none}
 .tplform input:focus,.tplform textarea:focus{border-color:var(--accent-dim)}
 .tplrow{display:flex;gap:10px}
-.tpledits-wrap{max-height:48vh;overflow:auto;border:1px solid var(--line-soft);border-radius:9px}
+.tpledits-wrap{max-height:38vh;overflow:auto;border:1px solid var(--line-soft);border-radius:9px}
 #tplList{max-height:56vh} /* the step wrapper breaks the flex chain, so cap + scroll the list itself */
+/* Steps shrink and scroll inside the modal, so the action buttons below always stay visible */
+#tplModal>div[id^="tplStep"]{min-height:0;overflow-y:auto;scrollbar-width:thin}
+.tpledits-wrap{flex:none}
 .tpledits{border-collapse:collapse;width:100%;font-size:.8rem}
 .tpledits th,.tpledits td{border-bottom:1px solid var(--line-soft);padding:6px 10px;text-align:left}
 .tpledits th{font:600 .66rem var(--ui);letter-spacing:.07em;text-transform:uppercase;color:var(--faint);position:sticky;top:0;background:var(--panel)}
@@ -657,7 +660,7 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
       </div>
     </div>
     <div id="tplStep3" style="display:none">
-      <p class="hint">Review the proposed values — edit anything, then choose an output. Cells not listed stay exactly as the template has them.</p>
+      <p class="hint">Cells not listed stay exactly as the template has them.</p>
       <div class="tpledits-wrap"><table class="tpledits" id="tplEdits"></table></div>
       <div class="tplform" style="margin-top:10px"><label>File name (for download or SharePoint)
         <input id="tfName" placeholder="Project_Trade_Scope_MM.DD.YY"></label></div>
