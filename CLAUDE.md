@@ -21,8 +21,11 @@ with bid review, bid leveling, scope tracing, and drafting GMP contract exhibits
   bubble; claude.ai-style Projects PAGES (not a modal): a cards grid with search and "+ New project"
   (name+description dialog), and a per-project detail page — its chats (filtered by chat.project),
   "Work in this project" (sets the composer context + starts a fresh chat), armed delete, and PROJECT
-  KNOWLEDGE: description, instructions and up to 10 extracted text files, edited in place and saved to
-  the server; view switching via showView('chat'|'projects'|'detail') toggling .center/.foot/.projpage, light/dark themes (dark-first, Linear/Vercel aesthetic); dictation via the Web Speech API
+  KNOWLEDGE: description, instructions and up to 100 extracted text files (single files or a whole
+  folder via a webkitdirectory picker — folder files keep "Folder/path" names and render as ONE folder
+  tile with an item count; ingest shows live progress and skips hidden/unsupported files; /api/chat
+  injects knowledge under a 600k-char budget and lists whatever didn't fit so the agent can fetch it),
+  edited in place and saved to the server; view switching via showView('chat'|'projects'|'detail') toggling .center/.foot/.projpage, light/dark themes (dark-first, Linear/Vercel aesthetic); dictation via the Web Speech API
   (mic preflight through getUserMedia with noiseSuppression/echoCancellation/autoGainControl on, clear
   placeholder errors when blocked/missing, auto-restarting continuous recognition, EN·US / EN·IN chip
   persisted as precon.dictLang — needs Chrome/Edge/Safari and mic permission; the Claude browser pane
