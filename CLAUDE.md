@@ -69,10 +69,15 @@ with bid review, bid leveling, scope tracing, and drafting GMP contract exhibits
     rendered as a ✓-list above the reply. No project selected → no tools. System prompt = Straticon ai
     persona + master schema + agent rules + optional active project + attached document texts.
   - `GET/POST/DELETE /api/projects[/:id]` → shared project store in `.projects.json` ({id,name,
-    description,instructions,knowledge[{name,text}]}; seeded with the 8 known projects on first read;
-    POST creates (no id) or partially updates). /api/chat injects the active project's instructions and
-    knowledge docs into the system prompt, so they ground every chat in that project. The old
-    localStorage project list is gone.
+    description,instructions,knowledge[{name,text}],createdBy}; seeded with the 8 known projects on
+    first read; POST creates (no id) or partially updates). /api/chat injects the active project's
+    instructions and knowledge docs into the system prompt, so they ground every chat in that project.
+    The old localStorage project list is gone. SHARING (claude.ai style): GET /:id/members returns
+    {createdBy, members[{name,email,via: admin|all|shared}]}; POST /:id/share {email, remove?} — anyone
+    with access can grant to an existing account, only admins can revoke (and '*'/admin access is
+    managed in People & access, not here). UI: Share button + "Created by X · Shared with N people"
+    subtitle on the project page, share dialog (avatar rows, role chips, armed remove ×), and the
+    knowledge card shows a claude.ai-style capacity bar (% of the 10×150k-char budget) over file tiles.
   - `GET/POST/DELETE /api/chats[/:id]` → chat persistence: one JSON per chat in `.chats/`
     ({id, title, project, messages, createdAt, updatedAt}; title auto-derived from the first user
     message; the client saves after every assistant reply and restores project context on open).

@@ -753,7 +753,7 @@ app.post('/api/extract', express.raw({ type: () => true, limit: '80mb' }), async
 
 // ---------- Projects (claude.ai-style): shared store with description, instructions, knowledge ----------
 const PROJECTS_FILE = path.join(__dirname, '.projects.json');
-interface ProjectRec { id: string; name: string; description: string; instructions: string; knowledge: { name: string; text: string }[]; createdAt: string; updatedAt: string }
+interface ProjectRec { id: string; name: string; description: string; instructions: string; knowledge: { name: string; text: string }[]; createdBy?: string; createdAt: string; updatedAt: string }
 const PROJECT_SEED: [string, string][] = [
   ['Seacoast', 'Early Works → GMP Amendment · Exhibits C.1–C.5 · leveling & buyout'],
   ['Manor Cypress Creek', 'GMP proposal · Related Development · 42 bid packages · multifamily'],
@@ -798,9 +798,10 @@ app.post('/api/projects', (req: Request, res: Response) => {
   if (id && !p) { res.status(404).json({ error: 'Project not found' }); return; }
   if (!p) {
     if (!name?.trim()) { res.status(400).json({ error: 'name required' }); return; }
-    p = { id: crypto.randomUUID(), name: name.trim(), description: '', instructions: '', knowledge: [], createdAt: now, updatedAt: now };
-    all.push(p);
     const creator = reqUser(req);
+    p = { id: crypto.randomUUID(), name: name.trim(), description: '', instructions: '', knowledge: [],
+      createdBy: creator.name || creator.email, createdAt: now, updatedAt: now };
+    all.push(p);
     if (creator.role !== 'admin' && creator.projectIds !== '*') {
       const users = loadUsers(); const cu = users.find(x => x.id === creator.id);
       if (cu && cu.projectIds !== '*') { (cu.projectIds as string[]).push(p.id); saveUsers(users); }
@@ -832,6 +833,41 @@ app.delete('/api/projects/:id', (req: Request, res: Response) => {
   if (i < 0) { res.status(404).json({ error: 'Project not found' }); return; }
   all.splice(i, 1); saveProjects(all);
   res.json({ ok: true });
+});
+
+// Sharing, claude.ai style: who has access, and grant/revoke it per project
+function projectMembers(p: ProjectRec) {
+  return loadUsers()
+    .filter(x => x.role === 'admin' || x.projectIds === '*' || x.projectIds.includes(p.id))
+    .map(x => ({ id: x.id, name: x.name, email: x.email,
+      via: x.role === 'admin' ? 'admin' : x.projectIds === '*' ? 'all' : 'shared' }));
+}
+app.get('/api/projects/:id/members', (req: Request, res: Response) => {
+  const p = loadProjects().find(x => x.id === req.params.id);
+  if (!p) { res.status(404).json({ error: 'Project not found' }); return; }
+  const u = reqUser(req);
+  if (!(u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id))) { res.status(403).json({ error: 'No access to this project' }); return; }
+  res.json({ createdBy: p.createdBy || null, members: projectMembers(p) });
+});
+// Anyone with access can share with an existing @straticon.com account; only admins can revoke
+app.post('/api/projects/:id/share', (req: Request, res: Response) => {
+  const p = loadProjects().find(x => x.id === req.params.id);
+  if (!p) { res.status(404).json({ error: 'Project not found' }); return; }
+  const u = reqUser(req);
+  if (!(u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id))) { res.status(403).json({ error: 'No access to this project' }); return; }
+  const { email, remove } = req.body as { email?: string; remove?: boolean };
+  const users = loadUsers();
+  const target = users.find(x => x.email.toLowerCase() === String(email || '').trim().toLowerCase());
+  if (!target) { res.status(404).json({ error: 'No account with that email — ask an admin to add them under People & access first' }); return; }
+  if (remove) {
+    if (u.role !== 'admin') { res.status(403).json({ error: 'Only admins can remove access' }); return; }
+    if (target.role === 'admin' || target.projectIds === '*') { res.status(400).json({ error: 'That person has access to all projects — change it under People & access' }); return; }
+    target.projectIds = target.projectIds.filter(x => x !== p.id);
+  } else if (target.role !== 'admin' && target.projectIds !== '*' && !target.projectIds.includes(p.id)) {
+    target.projectIds.push(p.id);
+  }
+  saveUsers(users);
+  res.json({ createdBy: p.createdBy || null, members: projectMembers(p) });
 });
 
 // ---------- Chat persistence: one JSON per chat in .chats/ ----------

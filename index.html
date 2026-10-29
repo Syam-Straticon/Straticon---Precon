@@ -205,6 +205,32 @@ body.sidebar-pinned .shell{grid-template-columns:268px 1fr}
 .bchip.no{background:rgba(248,113,113,.13);color:#f87171}
 .pp-know input,.pp-know textarea{width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--line);border-radius:9px;color:var(--fg);padding:8px 11px;font:400 .84rem var(--ui);outline:none;margin-bottom:9px;resize:vertical}
 .pp-know input:focus,.pp-know textarea:focus{border-color:var(--accent-dim)}
+/* claude.ai-style project header + sharing */
+.pp-sub{color:var(--faint);font:400 .82rem var(--ui);margin:3px 0 0;display:flex;align-items:center;gap:7px;width:100%}
+.pp-sub svg{width:13px;height:13px}
+.pk-bar{height:6px;border-radius:4px;background:var(--surface);border:1px solid var(--line-soft);overflow:hidden;margin:4px 0 4px}
+.pk-bar i{display:block;height:100%;background:var(--accent);border-radius:4px;transition:width .3s}
+.pk-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px;margin:10px 0 8px}
+.pk-tile{position:relative;border:1px solid var(--line-soft);background:var(--surface);border-radius:10px;padding:10px;min-height:72px;display:flex;flex-direction:column;gap:6px}
+.pk-tile svg{width:15px;height:15px;color:var(--faint)}
+.pk-tile b{font:600 .73rem var(--ui);color:var(--fg);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}
+.pk-tile small{color:var(--faint);font-size:.68rem;margin-top:auto}
+.pk-tile button{position:absolute;top:3px;right:3px;background:none;border:0;color:var(--faint);cursor:pointer;font-size:.9rem;line-height:1;padding:4px 6px;border-radius:6px;opacity:0}
+.pk-tile:hover button{opacity:1}
+.pk-tile button:hover{background:var(--raise);color:var(--fg)}
+.sh-add{display:flex;gap:8px;margin:4px 0 12px}
+.sh-add input{flex:1;background:var(--surface);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:9px 12px;font:400 .86rem var(--ui);outline:none;min-width:0}
+.sh-add input:focus{border-color:var(--accent-dim)}
+.sh-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.sh-row:last-child{border-bottom:none}
+.sh-av{width:30px;height:30px;border-radius:50%;background:var(--raise);display:flex;align-items:center;justify-content:center;font:600 .68rem var(--ui);color:var(--fg);flex:none}
+.sh-meta{min-width:0;flex:1}
+.sh-meta b{display:block;font:600 .82rem var(--ui)}
+.sh-meta small{color:var(--faint);font-size:.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+.sh-chip{flex:none;font:600 .64rem var(--ui);letter-spacing:.06em;text-transform:uppercase;color:var(--faint);border:1px solid var(--line);border-radius:20px;padding:3px 9px}
+.sh-x{flex:none;background:none;border:0;color:var(--faint);cursor:pointer;font-size:1rem;padding:4px 7px;border-radius:7px}
+.sh-x:hover{background:var(--raise);color:#f87171}
+.sh-x.armed{color:#f87171}
 .pp-file{display:flex;align-items:center;gap:8px;padding:7px 11px;border:1px solid var(--line-soft);border-radius:8px;margin-bottom:6px;font-size:.79rem;color:var(--muted)}
 .pp-file svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.7;flex:none}
 .pp-file button{margin-left:auto;background:none;border:none;color:var(--faint);cursor:pointer;font-size:.9rem}
@@ -500,7 +526,9 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
       <div class="pp-title">
         <h1 id="pdName" title="Click to rename"></h1>
         <button class="pact primary" id="pdWork">Work in this project</button>
+        <button class="pact" id="pdShare"><svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;vertical-align:-2px"><circle cx="9" cy="8" r="3"/><path d="M3 20c1-3 3.2-4.5 6-4.5s5 1.5 6 4.5M17 5v6M20 8h-6"/></svg> Share</button>
         <button class="pact" id="pdDelete"><span>Delete project</span></button>
+        <div class="pp-sub" id="pdMeta"></div>
       </div>
       <!-- Chat straight from the project page, claude.ai style -->
       <div class="docchips" id="pdChips" style="margin-top:14px"></div>
@@ -521,9 +549,12 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
           <h4 style="margin-top:22px">Bid records &amp; leveling</h4><div id="pdRecords"></div>
         </div>
         <div class="pp-sec pp-know">
-          <h4>Project knowledge</h4>
+          <h4>Instructions</h4>
           <input id="pdDesc" placeholder="Short description…">
           <textarea id="pdInstr" rows="6" placeholder="Instructions — how Straticon ai should behave in this project: exhibit naming, owner quirks, what to watch for…"></textarea>
+          <h4 style="margin-top:16px">Project knowledge</h4>
+          <div class="pk-bar" id="pdCapBar" style="display:none"><i style="width:0"></i></div>
+          <div class="pp-cap" id="pdCapTxt" style="display:none"></div>
           <div id="pdFiles"></div>
           <div class="addrow" style="justify-content:flex-start;gap:8px">
             <button type="button" class="pact" id="pdAddFile">+ Add knowledge file</button>
@@ -688,6 +719,21 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
         </div>
       </section>
     </div>
+  </div>
+</div>
+
+<!-- Share project (claude.ai style) -->
+<div class="overlay" id="shareOverlay">
+  <div class="modal">
+    <h2>Share project</h2>
+    <p class="hint" id="shHint">People with access can open this project, chat in it, and use its knowledge and files.</p>
+    <div class="sh-add">
+      <input id="shEmail" type="email" placeholder="name@straticon.com">
+      <button type="button" class="pact primary" id="shAdd">Share</button>
+    </div>
+    <div class="autherr" id="shStatus"></div>
+    <div id="shList"><div class="pp-empty">Loading…</div></div>
+    <div class="addrow"><button type="button" class="pact" id="shClose">Close</button></div>
   </div>
 </div>
 
@@ -937,27 +983,87 @@ document.getElementById('ppSearch').addEventListener('input',()=>loadProjectsPag
 document.getElementById('ppBack').addEventListener('click',loadProjectsPage);
 function renderPdFiles(){
   const box=document.getElementById('pdFiles'); box.innerHTML='';
-  (curProj.knowledge||[]).forEach((k,i)=>{
-    const f=document.createElement('div'); f.className='pp-file';
-    f.innerHTML=ICONS.file+'<span>'+esc(k.name)+'</span>';
+  const bar=document.getElementById('pdCapBar'), txt=document.getElementById('pdCapTxt');
+  const files=curProj.knowledge||[];
+  // Capacity bar, claude.ai style: % of the 10×150k-char knowledge budget
+  const used=files.reduce((a,k)=>a+(k.text||'').length,0);
+  const pct=Math.min(100,Math.max(files.length?1:0,Math.round(used/(10*150000)*100)));
+  bar.style.display=txt.style.display=files.length?'':'none';
+  bar.firstElementChild.style.width=pct+'%';
+  txt.textContent=pct+'% of project capacity used · '+files.length+'/10 files';
+  if(!files.length){ box.innerHTML='<div class="pp-empty">No knowledge files — add scope baselines, owner requirements, naming rules…</div>'; return; }
+  const grid=document.createElement('div'); grid.className='pk-tiles';
+  files.forEach((k,i)=>{
+    const t=document.createElement('div'); t.className='pk-tile';
+    const kb=(k.text||'').length;
+    t.innerHTML=ICONS.file+'<b>'+esc(k.name)+'</b><small>'+(kb>=1000?Math.round(kb/1000)+'k chars':kb+' chars')+'</small>';
     const x=document.createElement('button'); x.textContent='×'; x.title='Remove from knowledge';
     x.addEventListener('click',()=>{ curProj.knowledge.splice(i,1); renderPdFiles(); });
-    f.appendChild(x); box.appendChild(f);
+    t.appendChild(x); grid.appendChild(t);
   });
-  if(!(curProj.knowledge||[]).length) box.innerHTML='<div class="pp-empty">No knowledge files — add scope baselines, owner requirements, naming rules…</div>';
-  else{
-    const used=(curProj.knowledge||[]).reduce((a,k)=>a+(k.text||'').length,0);
-    const cap=document.createElement('div'); cap.className='pp-cap';
-    cap.textContent=curProj.knowledge.length+'/10 files · '+Math.min(100,Math.round(used/(10*150000)*100))+'% of knowledge capacity';
-    box.appendChild(cap);
-  }
+  box.appendChild(grid);
 }
+// Project sharing (claude.ai style): members list + grant by email
+const shareOverlay=document.getElementById('shareOverlay');
+let pdMembers=null;
+function pdMetaText(){
+  const el=document.getElementById('pdMeta');
+  if(!pdMembers){ el.textContent=''; return; }
+  const others=pdMembers.members.filter(m=>m.email!==ME.email).length;
+  el.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="9" cy="8" r="3"/><path d="M3 20c1-3 3.2-4.5 6-4.5s5 1.5 6 4.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17.5 15.6c2 .4 3.1 1.7 3.7 4"/></svg>'
+    +esc((pdMembers.createdBy?'Created by '+pdMembers.createdBy+' · ':'')+(others?'Shared with '+others+(others===1?' person':' people'):'Only you'));
+}
+function renderShare(){
+  const box=document.getElementById('shList'); box.innerHTML='';
+  pdMembers.members.forEach(m=>{
+    const row=document.createElement('div'); row.className='sh-row';
+    const chip=m.via==='admin'?'Admin':m.via==='all'?'All projects':'Member';
+    row.innerHTML='<span class="sh-av">'+esc((m.name||'?').split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase())+'</span>'
+      +'<div class="sh-meta"><b>'+esc(m.name)+(m.email===ME.email?' (you)':'')+'</b><small>'+esc(m.email)+'</small></div>'
+      +'<span class="sh-chip">'+chip+'</span>';
+    if(ME.role==='admin'&&m.via==='shared'){
+      const x=document.createElement('button'); x.className='sh-x'; x.textContent='×'; x.title='Remove access';
+      x.addEventListener('click',async()=>{
+        if(x.dataset.armed!=='1'){ x.dataset.armed='1'; x.classList.add('armed'); x.title='Click again to remove access';
+          setTimeout(()=>{x.dataset.armed='';x.classList.remove('armed');x.title='Remove access';},6000); return; }
+        try{ pdMembers=await j('/api/projects/'+curProj.id+'/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:m.email,remove:true})});
+          renderShare(); pdMetaText(); }catch(e){ document.getElementById('shStatus').textContent=e.message; }
+      });
+      row.appendChild(x);
+    }
+    box.appendChild(row);
+  });
+}
+async function loadShareMembers(){
+  try{ pdMembers=await j('/api/projects/'+curProj.id+'/members'); pdMetaText(); }catch(_){ pdMembers=null; pdMetaText(); }
+}
+document.getElementById('pdShare').addEventListener('click',async()=>{
+  document.getElementById('shStatus').textContent='';
+  document.getElementById('shEmail').value='';
+  document.getElementById('shList').innerHTML='<div class="pp-empty">Loading…</div>';
+  shareOverlay.classList.add('show');
+  await loadShareMembers();
+  if(pdMembers) renderShare(); else document.getElementById('shList').innerHTML='<div class="pp-empty">Couldn’t load members.</div>';
+});
+document.getElementById('shAdd').addEventListener('click',async()=>{
+  const email=document.getElementById('shEmail').value.trim(), st=document.getElementById('shStatus');
+  st.textContent='';
+  if(!email){ st.textContent='Enter a @straticon.com email'; return; }
+  try{
+    pdMembers=await j('/api/projects/'+curProj.id+'/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    document.getElementById('shEmail').value=''; renderShare(); pdMetaText();
+  }catch(e){ st.textContent=e.message; }
+});
+document.getElementById('shEmail').addEventListener('keydown',e=>{ if(e.key==='Enter')document.getElementById('shAdd').click(); });
+document.getElementById('shClose').addEventListener('click',()=>shareOverlay.classList.remove('show'));
+shareOverlay.addEventListener('click',e=>{ if(e.target===shareOverlay)shareOverlay.classList.remove('show'); });
 async function openProjectDetail(id){
   try{ curProj=await j('/api/projects/'+id); }catch(e){ loadProjectsPage(); return; } // deleted → back to the list
   document.getElementById('pdName').textContent=curProj.name;
   document.getElementById('pdDesc').value=curProj.description||'';
   document.getElementById('pdInstr').value=curProj.instructions||'';
   const dl=document.getElementById('pdDelete'); dl.querySelector('span').textContent='Delete project'; dl.dataset.armed='';
+  pdMembers=null; pdMetaText(); loadShareMembers(); // "Created by · Shared with N" fills in async
   renderPdFiles();
   // Chats belonging to this project
   const cbox=document.getElementById('pdChats'); cbox.innerHTML='';
@@ -1178,8 +1284,8 @@ let chatDocs=[], chatImages=[]; // already sent with earlier messages; stay in t
 const fbOverlay=document.getElementById('fbOverlay'), fbList=document.getElementById('fbList'),
       fbCrumbs=document.getElementById('fbCrumbs'), fbStatus=document.getElementById('fbStatus');
 let fbHub=null, fbProj=null, fbPath=[]; // breadcrumb stack: {label, load}
-async function j(url){
-  const r=await fetch(url);
+async function j(url,opts){
+  const r=await fetch(url,opts);
   const d=await r.json();
   if(r.status===401){ showAuth(false); throw new Error('Signed out'); }
   if(d.error) throw new Error(d.error);
