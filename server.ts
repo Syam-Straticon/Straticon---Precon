@@ -1280,7 +1280,7 @@ app.post('/api/templates/fill', async (req: Request, res: Response) => {
 // Finalize: apply (possibly user-adjusted) edits, then download as .xlsx/.pdf or save to SharePoint
 app.post('/api/templates/finalize', async (req: Request, res: Response) => {
   try {
-    const { fillId, edits, action, fileName } = req.body as { fillId: string; edits: TplEdit[]; action: 'xlsx' | 'pdf' | 'sharepoint'; fileName: string };
+    const { fillId, edits, action, fileName } = req.body as { fillId: string; edits: TplEdit[]; action: 'xlsx' | 'pdf' | 'sharepoint' | 'onedrive'; fileName: string };
     const fill = fills.get(fillId);
     if (!fill) { res.status(410).json({ error: 'This fill session expired — fill the template again.' }); return; }
     const safeName = (fileName || 'scope').replace(/[\\/:*?"<>|]/g, '-').trim();
@@ -1303,6 +1303,11 @@ app.post('/api/templates/finalize', async (req: Request, res: Response) => {
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName(safeName)}.xlsx"`);
       res.send(out); return;
+    }
+    if (action === 'onedrive') {
+      const od = await oneDriveUpload(reqUser(req).email, headerSafeName(safeName) + '.xlsx', out,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.json({ ok: true, webUrl: od.webUrl, name: headerSafeName(safeName) + '.xlsx' }); return;
     }
     if (action === 'pdf') {
       // Simple documentation PDF: sheet values laid out row by row (not a pixel-exact Excel render)
@@ -1356,9 +1361,9 @@ app.post('/api/templates/finalize', async (req: Request, res: Response) => {
 // ---------- Export an assistant reply as a branded Word or PDF document (client-facing letters) ----------
 app.post('/api/document', async (req: Request, res: Response) => {
   try {
-    const body = req.body as { title?: string; project?: string | null; markdown?: string; format: 'docx' | 'pdf'; docId?: string };
+    const body = req.body as { title?: string; project?: string | null; markdown?: string; format: 'docx' | 'pdf'; docId?: string; to?: 'download' | 'onedrive' };
     let { title, project, markdown } = body;
-    const { format, docId } = body;
+    const { format, docId, to } = body;
     if (docId) { // a model-generated document: clean content stored server-side
       try {
         const d = JSON.parse(fs.readFileSync(genDocFile(docId), 'utf8')) as GenDoc;
@@ -1420,17 +1425,22 @@ app.post('/api/document', async (req: Request, res: Response) => {
       }
       const doc = new Document({ sections: [{ children }] });
       const out = Buffer.from(await Packer.toBuffer(doc));
-      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      const mimeW = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      if (to === 'onedrive') {
+        const od = await oneDriveUpload(reqUser(req).email, headerSafeName(safeName) + '.docx', out, mimeW);
+        res.json({ ok: true, webUrl: od.webUrl, name: headerSafeName(safeName) + '.docx' }); return;
+      }
+      res.setHeader('Content-Type', mimeW);
       res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName(safeName)}.docx"`);
       res.send(out); return;
     }
 
-    // PDF via pdfkit
+    // PDF via pdfkit — rendered to a buffer so it can download OR go to OneDrive
     const PDFDocument = require('pdfkit');
     const doc = new PDFDocument({ size: 'LETTER', margins: { top: 54, left: 54, right: 54, bottom: 54 } });
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName(safeName)}.pdf"`);
-    doc.pipe(res);
+    const pdfChunks: Buffer[] = [];
+    doc.on('data', (c: Buffer) => pdfChunks.push(c));
+    const pdfDone = new Promise<Buffer>(resolve => doc.on('end', () => resolve(Buffer.concat(pdfChunks))));
     // Header drawn at explicit positions — a "continued" line with mixed font sizes makes
     // pdfkit place the next line against the SMALL font's height, overlapping the brand text.
     doc.font('Helvetica-Bold').fontSize(20).fillColor('#1a2129').text('STRATICON', 54, 50, { lineBreak: false });
@@ -1468,6 +1478,14 @@ app.post('/api/document', async (req: Request, res: Response) => {
       }
     }
     doc.end();
+    const pdfBuf = await pdfDone;
+    if (to === 'onedrive') {
+      const od = await oneDriveUpload(reqUser(req).email, headerSafeName(safeName) + '.pdf', pdfBuf, 'application/pdf');
+      res.json({ ok: true, webUrl: od.webUrl, name: headerSafeName(safeName) + '.pdf' }); return;
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName(safeName)}.pdf"`);
+    res.send(pdfBuf);
   } catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
 
@@ -1486,6 +1504,31 @@ app.delete('/api/bidrecords/:id', (req: Request, res: Response) => {
     fs.unlinkSync(bidFile(req.params.id)); res.json({ ok: true });
   } catch { res.status(404).json({ error: 'Record not found' }); }
 });
+
+// ---------- OneDrive: save generated files into the signed-in user's own OneDrive ----------
+// Uses Graph application permission Files.ReadWrite.All; files land in a "Straticon ai" folder.
+async function oneDriveUpload(email: string, fileName: string, buf: Buffer, mime: string): Promise<{ webUrl?: string }> {
+  const token = await getMsToken();
+  const put = () => fetch(
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(email)}/drive/root:/${encodeURIComponent('Straticon ai')}/${encodeURIComponent(fileName)}:/content`,
+    { method: 'PUT', headers: { Authorization: 'Bearer ' + token, 'Content-Type': mime }, body: new Uint8Array(buf) });
+  let r = await put();
+  if (r.status === 404 || r.status === 400) {
+    // Parent folder may not exist yet — create "Straticon ai" at the drive root, then retry once
+    await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(email)}/drive/root/children`, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Straticon ai', folder: {}, '@microsoft.graph.conflictBehavior': 'replace' })
+    });
+    r = await put();
+  }
+  const data = await r.json() as { webUrl?: string; error?: { message?: string } };
+  if (!r.ok) {
+    throw new Error(r.status === 403
+      ? 'OneDrive save needs the Entra app permission Files.ReadWrite.All (admin consent).'
+      : (data.error?.message || 'OneDrive upload failed: ' + r.status));
+  }
+  return { webUrl: data.webUrl };
+}
 
 // HTTP headers only take Latin-1: strip smart dashes/quotes and anything non-ASCII from filenames,
 // or Node throws "Invalid character in header content".

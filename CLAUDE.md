@@ -122,6 +122,11 @@ with bid review, bid leveling, scope tracing, and drafting GMP contract exhibits
   - extractText also reads legacy .xls (SheetJS, installed from cdn.sheetjs.com tarball), Word .docx
     (mammoth) and Outlook .msg (@kenjiuno/msgreader) — wired into local uploads, knowledge files and
     the agent read tools.
+  - OneDrive saves: `oneDriveUpload()` PUTs into the SIGNED-IN user's own OneDrive (Graph application
+    permission Files.ReadWrite.All, admin-consented) under a "Straticon ai" folder, auto-created on
+    first save. Wired as `to:'onedrive'` on /api/document (docx/pdf), action 'onedrive' on
+    /api/templates/finalize, an OneDrive button on document cards, "Save to OneDrive" in reply hover
+    tools, and "Save to my OneDrive" on the template review step.
   - `GET /api/autodesk/*` → APS Data Management API (2-legged OAuth, token cached).
   - `GET /api/sharepoint/*` → Microsoft Graph (client credentials, token cached). Sites → drives → folder
     children → file download.

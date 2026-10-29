@@ -591,6 +591,7 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
       <button type="button" class="pact" id="tplClose">Close</button>
       <button type="button" class="pact primary" id="tplFill" style="display:none">Fill template</button>
       <button type="button" class="pact" id="tplPdf" style="display:none">Download PDF</button>
+      <button type="button" class="pact" id="tplOd" style="display:none">Save to my OneDrive</button>
       <button type="button" class="pact" id="tplSp" style="display:none">Save to SharePoint</button>
       <button type="button" class="pact primary" id="tplXlsx" style="display:none">Download .xlsx</button>
     </div>
@@ -704,7 +705,8 @@ function md(text){
       out+='<div class="doccard" data-docid="'+dm[1]+'" data-title="'+e(dm[2])+'">'
         +'<svg viewBox="0 0 24 24"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>'
         +'<div class="dcmeta"><b>'+e(dm[2])+'</b><span>Document · ready to download</span></div>'
-        +'<button class="pact dlbtn" data-format="docx">Word</button><button class="pact primary dlbtn" data-format="pdf">PDF</button></div>';
+        +'<button class="pact dlbtn" data-format="docx">Word</button><button class="pact dlbtn" data-format="pdf">PDF</button>'
+        +'<button class="pact primary dlbtn" data-format="docx" data-to="onedrive" title="Save the Word file into your OneDrive (Straticon ai folder)">OneDrive</button></div>';
       i++;continue;
     }
     if(/^\s*\|.*\|\s*$/.test(L)){ // table block
@@ -1231,18 +1233,37 @@ function addExportTools(el,markdown){
   };
   bar.appendChild(mk('Export Word','docx'));
   bar.appendChild(mk('Export PDF','pdf'));
+  // Save the Word version straight into the signed-in user's OneDrive
+  const od=document.createElement('button'); od.className='pact'; od.textContent='Save to OneDrive';
+  od.addEventListener('click',async()=>{
+    od.disabled=true; od.textContent='Saving…';
+    try{
+      const h=markdown.match(/^#{1,4}\s*(.+)$/m);
+      const title=(h?h[1]:'Straticon ai export').replace(/\*\*/g,'').slice(0,100);
+      const r=await fetch('/api/document',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({title,project:activeProject(),markdown,format:'docx',to:'onedrive'})});
+      const d=await r.json(); if(d.error)throw new Error(d.error);
+      od.textContent='Saved to OneDrive ✓'; setTimeout(()=>{od.textContent='Save to OneDrive';od.disabled=false;},2500);
+    }catch(e){ od.textContent=e.message.slice(0,34); setTimeout(()=>{od.textContent='Save to OneDrive';od.disabled=false;},3000); }
+  });
+  bar.appendChild(od);
   el.appendChild(bar);
 }
 // Download buttons on generated-document cards (delegated — cards live inside rendered markdown)
 document.addEventListener('click',async e=>{
   const btn=e.target.closest('.dlbtn'); if(!btn)return;
   const card=btn.closest('.doccard'); if(!card)return;
-  const format=btn.dataset.format, title=card.dataset.title||'Document';
+  const format=btn.dataset.format, title=card.dataset.title||'Document', to=btn.dataset.to;
   const old=btn.textContent; btn.disabled=true; btn.textContent='…';
   try{
     const r=await fetch('/api/document',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({docId:card.dataset.docid,format})});
+      body:JSON.stringify({docId:card.dataset.docid,format,to})});
     if(!r.ok){ const d=await r.json().catch(()=>({})); throw new Error(d.error||('Failed: '+r.status)); }
+    if(to==='onedrive'){
+      await r.json();
+      btn.textContent='Saved to OneDrive ✓'; setTimeout(()=>{btn.textContent=old;btn.disabled=false;},2500);
+      return;
+    }
     const blob=await r.blob(),a=document.createElement('a');
     a.href=URL.createObjectURL(blob); a.download=title.replace(/[\\/:*?"<>|]/g,'-')+(format==='pdf'?'.pdf':'.docx'); a.click();
     setTimeout(()=>URL.revokeObjectURL(a.href),10000);
@@ -1535,7 +1556,7 @@ micBtn.addEventListener('click',async()=>{
 });
 // ---- Scope templates: + menu → pick → fill → review → download / save ----
 const plusMenu=document.getElementById('plusMenu'), tplOverlay=document.getElementById('tplOverlay');
-const tplEls=Object.fromEntries(['tplTitle','tplHint','tplStep1','tplStep2','tplStep3','tplList','tplEdits','tplStatus','tplBack','tplFill','tplPdf','tplSp','tplXlsx']
+const tplEls=Object.fromEntries(['tplTitle','tplHint','tplStep1','tplStep2','tplStep3','tplList','tplEdits','tplStatus','tplBack','tplFill','tplPdf','tplOd','tplSp','tplXlsx']
   .map(id=>[id,document.getElementById(id)]));
 let tplState={step:1,chosen:null,fillId:null,edits:[]};
 function activeProject(){ return document.getElementById('ctx').classList.contains('show') ? document.getElementById('ctxName').textContent : null; }
@@ -1592,7 +1613,7 @@ function tplShow(step){
   tplEls.tplStep3.style.display=step===3?'':'none';
   tplEls.tplBack.style.display=step>1?'':'none';
   tplEls.tplFill.style.display=step===2?'':'none';
-  for(const b of ['tplPdf','tplSp','tplXlsx']) tplEls[b].style.display=step===3?'':'none';
+  for(const b of ['tplPdf','tplOd','tplSp','tplXlsx']) tplEls[b].style.display=step===3?'':'none';
   tplEls.tplHint.textContent=step===1?'Pick a master template or a category’s latest sheet.'
     :step===2?'Add what you have — form fields, pasted text, or both. Straticon ai fills the template.'
     :'Review the proposed values — edit anything, then choose an output.';
@@ -1662,13 +1683,13 @@ function tplSuggestName(){
 async function tplFinalize(action){
   // No browser dialogs here — they're blocked in embedded panes. The name comes from the in-modal field.
   const name=(document.getElementById('tfName').value.trim()||tplSuggestName());
-  tplEls.tplStatus.textContent=action==='sharepoint'?'Saving to SharePoint…':'Preparing file…';
+  tplEls.tplStatus.textContent=action==='sharepoint'?'Saving to SharePoint…':action==='onedrive'?'Saving to your OneDrive…':'Preparing file…';
   try{
     const r=await fetch('/api/templates/finalize',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({fillId:tplState.fillId,edits:tplCollectEdits(),action,fileName:name})});
-    if(action==='sharepoint'){
+    if(action==='sharepoint'||action==='onedrive'){
       const d=await r.json(); if(d.error)throw new Error(d.error);
-      tplEls.tplStatus.textContent='Saved to SharePoint ✓ '+(d.name||'');
+      tplEls.tplStatus.textContent=(action==='onedrive'?'Saved to your OneDrive ✓ ':'Saved to SharePoint ✓ ')+(d.name||'');
     }else{
       if(!r.ok){ const d=await r.json().catch(()=>({})); throw new Error(d.error||'Failed: '+r.status); }
       const blob=await r.blob(), a=document.createElement('a');
@@ -1679,6 +1700,7 @@ async function tplFinalize(action){
   }catch(e){ tplEls.tplStatus.textContent=e.message; }
 }
 tplEls.tplXlsx.addEventListener('click',()=>tplFinalize('xlsx'));
+tplEls.tplOd.addEventListener('click',()=>tplFinalize('onedrive'));
 tplEls.tplPdf.addEventListener('click',()=>tplFinalize('pdf'));
 // SharePoint save confirms with a second click on the same button (no popup dialogs)
 tplEls.tplSp.addEventListener('click',()=>{
