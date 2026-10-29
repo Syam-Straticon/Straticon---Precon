@@ -1504,7 +1504,11 @@ loadRecents();
     last=localStorage.getItem('precon.lastChat'); proj=localStorage.getItem('precon.project');
     view=localStorage.getItem('precon.view'); viewProj=localStorage.getItem('precon.viewProject');
   }catch(_){}
-  // Come back to the view the user was on — projects pages included
+  // Come back to the view the user was on — projects pages included.
+  // Hide the home/chat view SYNCHRONOUSLY first, or it flashes while the project data loads.
+  if(view==='projects'||view==='detail'){
+    centerEl.style.display='none'; footEl.style.display='none';
+  }
   if(view==='projects'){ loadProjectsPage(); return; }
   if(view==='detail'&&viewProj){
     try{ await openProjectDetail(viewProj); return; }catch(_){ loadProjectsPage(); return; }
