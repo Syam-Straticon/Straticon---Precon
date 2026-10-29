@@ -1187,7 +1187,7 @@ async function extractXlsx(buf: Buffer): Promise<string> {
             : cell.value instanceof Date ? cell.value.toISOString().slice(0, 10) // exceljs parses Excel dates as UTC
             : cell.text;
         } catch { v = String(cell.value ?? ''); }
-        cells.push(v.replace(/\s+/g, ' ').trim());
+        cells.push(String(v ?? '').replace(/\s+/g, ' ').trim());
       }
       while (cells.length && !cells[cells.length - 1]) cells.pop();
       if (cells.some(Boolean)) rows.push(`R${row.number}: ${cells.join(' | ')}`);
@@ -1337,7 +1337,7 @@ app.post('/api/templates/fill', async (req: Request, res: Response) => {
           const isDup = c.isMerged && c.master.address !== c.address;
           if (isDup) return;
           let v = ''; try { v = c.formula ? `=FORMULA` : c.text; } catch { v = String(c.value ?? ''); }
-          v = v.replace(/\s+/g, ' ').trim();
+          v = String(v ?? '').replace(/\s+/g, ' ').trim(); // cell.text can return non-strings (numbers/rich text)
           if (v) parts.push(`${c.address}: ${v}`);
         });
         if (parts.length) cells += parts.join(' | ') + '\n';
