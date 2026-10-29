@@ -9,3 +9,4 @@ node_modules/
 .gendocs/
 .bidrecords/
 .scopesheets/
+.fills/

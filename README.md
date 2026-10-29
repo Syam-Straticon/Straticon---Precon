@@ -29,27 +29,32 @@ plus a single-file UI in `index.html`.
 | `MS_TENANT_ID` / `MS_CLIENT_ID` / `MS_CLIENT_SECRET` | Entra app registration, application permissions `Sites.ReadWrite.All` (admin-consented; read works with `Sites.Read.All`, SharePoint saves need write) |
 | `PORT` | 3001 |
 
-## Deploying — read this first
+## Deploying to Vercel
 
-**⚠️ Vercel will not work for this app as-is.** Vercel runs serverless functions with an ephemeral,
-read-only filesystem, and this app persists everything to local files: `.users.json` (accounts),
-`.sessions.json` (logins), `.chats/`, `.projects.json`, `.bidrecords/`, `.gendocs/`, `.cache/`.
-On Vercel all of that disappears between requests — every deploy/invocation would wipe accounts and
-chats, and the long-running SSE chat stream and in-memory session map don't fit the serverless model.
-Making it Vercel-ready means replacing file persistence with a database/KV/Blob store — a real refactor.
+The app has a dual storage driver (`store.ts`): local files when run with `npm start`, **Postgres
+when `POSTGRES_URL` is set** — which is what makes Vercel work (its filesystem is read-only and
+nothing on it persists). `api/index.ts` + `vercel.json` are the Vercel entry points.
 
-**Use a host that runs a persistent Node process with a disk instead** — Render, Railway or Fly.io.
-On Render (closest to zero changes):
+1. On vercel.com: **Add New → Project** → import this GitHub repo. Framework preset: **Other**.
+   No build command needed (leave defaults; Vercel builds `api/index.ts` via `vercel.json`).
+2. In the project: **Storage → Create Database → Postgres (Neon)** and connect it — this injects
+   `POSTGRES_URL` automatically. Tables are created on first use; nothing to run by hand.
+3. **Settings → Environment Variables**: add every variable from the table above
+   (`ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, `APS_*`, `MS_*`). `PORT` is not needed on Vercel.
+4. Deploy. First visit shows **Create the admin account**; then add the team under People & access.
 
-1. New → **Web Service** → connect this repo.
-2. Build command `npm install`, start command `npm start`.
-3. Add a **Persistent Disk** mounted at the app directory's data path (the dot-files above live next
-   to the code; easiest is mounting the service's working directory data dir and keeping defaults).
-4. Set all the environment variables from the table above in the service's Environment settings.
-5. The platform gives you HTTPS automatically — required, since the app uses password logins.
+Vercel limits to know about:
+- **Request bodies are capped at ~4.5 MB** — large local-file uploads ("Add Files & Photos" with big
+  PDFs) and many attached photos won't fit there; use the SharePoint/ACC attach flows instead, which
+  stream server-side. Local `npm start` keeps the full 60–80 MB limits.
+- Function runtime is capped (300s configured); very long agent turns with many visual PDF reads can
+  hit it.
+- Extraction caches live in `/tmp` (per-instance, ephemeral) — first reads after a cold start are slower.
 
-After the first deploy, open the URL and create the founding admin account, then add the team under
-**People & access**.
+**Migrating existing local data** (accounts, chats, projects, records) into the deployed Postgres is a
+one-time step — ask Straticon ai's maintainer session to generate the import script when needed.
+
+Render/Railway/Fly also work with zero extra setup (persistent process + disk, no `POSTGRES_URL` needed).
 
 ## Security notes
 

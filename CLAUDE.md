@@ -8,6 +8,14 @@ with bid review, bid leveling, scope tracing, and drafting GMP contract exhibits
 
 - **TypeScript only — no Python.** Backend: `server.ts` (Express, run with tsx). Frontend: `index.html`
   (single file, vanilla HTML/CSS/JS, served statically by the server).
+- **Storage driver `store.ts` (dual)**: local files (the original dot-file layout) when `POSTGRES_URL`
+  is unset; Postgres (two tables: docs(col,id,jsonb) + bins(col,id,bytea)) when set — that's how the
+  app runs on Vercel (`api/index.ts` entry + `vercel.json`, serverless, read-only FS, caches in /tmp,
+  `export default app`, app.listen skipped when process.env.VERCEL). ALL persistence (users, sessions,
+  projects, chats, bids, gendocs, scope sheets, template fills) is async through store.ts — never call
+  fs directly for data, and NEVER call canAccess/loadUsers/loadProjects/loadBids without await (they
+  return Promises; a bare `!canAccess(...)` would silently pass the ACL). Vercel limits: ~4.5 MB request
+  bodies (big local uploads only work on npm start), 300s maxDuration.
 - Run: `npm start` → http://localhost:3001 (PORT in .env). Type check: `npm run typecheck`.
 - `server.js` is a leftover pre-TypeScript version — ignored by the start script, safe to delete.
 

@@ -6,6 +6,7 @@ import express, { Request, Response } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { usingPg, kvGet, kvSet, docGet, docPut, docDel, docAll, binGet, binPut, binDel, sessGet, sessSet, sessDel, sessDelByUser } from './store';
 
 type Role = 'user' | 'assistant';
 interface ChatMessage { role: Role; content: string | ContentBlock[] }
@@ -27,8 +28,7 @@ app.use(express.json({ limit: '60mb' })); // attached photos ride in the chat pa
 app.use(express.static(__dirname)); // serves index.html (the login screen lives in the page itself)
 
 // ---------- Accounts & sessions: @straticon.com only, scrypt-hashed passwords, per-project access ----------
-const USERS_FILE = path.join(__dirname, '.users.json');
-const SESSIONS_FILE = path.join(__dirname, '.sessions.json');
+// Persistence goes through store.ts: local files by default, Postgres when POSTGRES_URL is set (Vercel).
 const EMAIL_DOMAIN = '@straticon.com';
 const SESSION_TTL = 7 * 24 * 3600_000; // 7 days
 
@@ -38,8 +38,8 @@ interface UserRec {
   projectIds: string[] | '*'; // '*' = all projects
   createdAt: string;
 }
-function loadUsers(): UserRec[] { try { return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8')) as UserRec[]; } catch { return []; } }
-function saveUsers(u: UserRec[]) { fs.writeFileSync(USERS_FILE, JSON.stringify(u, null, 1), { mode: 0o600 }); }
+async function loadUsers(): Promise<UserRec[]> { return (await kvGet<UserRec[]>('users')) ?? []; }
+async function saveUsers(u: UserRec[]): Promise<void> { await kvSet('users', u); }
 function hashPassword(pw: string, salt: string): string {
   return crypto.scryptSync(pw, salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex');
 }
@@ -52,104 +52,100 @@ function validEmail(e: string): boolean {
   return /^[a-z0-9._%+-]+@[a-z0-9.-]+$/i.test(e) && e.toLowerCase().endsWith(EMAIL_DOMAIN);
 }
 
-let sessions = new Map<string, { userId: string; exp: number }>();
-try { sessions = new Map(Object.entries(JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')))); } catch { /* fresh */ }
-function saveSessions() {
-  try { fs.writeFileSync(SESSIONS_FILE, JSON.stringify(Object.fromEntries(sessions)), { mode: 0o600 }); } catch { /* best effort */ }
-}
 function cookieSid(req: Request): string | null {
   const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie || '');
   return m ? m[1] : null;
 }
-function sessionUser(req: Request): UserRec | null {
+async function sessionUser(req: Request): Promise<UserRec | null> {
   const sid = cookieSid(req);
   if (!sid) return null;
-  const s = sessions.get(sid);
-  if (!s || s.exp < Date.now()) { if (s) { sessions.delete(sid); saveSessions(); } return null; }
-  return loadUsers().find(u => u.id === s.userId) ?? null;
+  const s = await sessGet(sid);
+  if (!s || s.exp < Date.now()) { if (s) await sessDel(sid); return null; }
+  return (await loadUsers()).find(u => u.id === s.userId) ?? null;
 }
-function startSession(res: Response, userId: string) {
+async function startSession(res: Response, userId: string): Promise<void> {
   const sid = crypto.randomBytes(32).toString('hex');
-  sessions.set(sid, { userId, exp: Date.now() + SESSION_TTL });
-  saveSessions();
-  res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL / 1000}`);
+  await sessSet(sid, { userId, exp: Date.now() + SESSION_TTL });
+  res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL / 1000}${usingPg ? '; Secure' : ''}`);
 }
 // Brute-force damper: 5 tries, then a 10-minute cool-off per email
 const loginFails = new Map<string, { n: number; until: number }>();
 
 const PUBLIC_API = /^\/api\/auth\/(login|setup|me)$/;
-app.use((req: Request, res: Response, next: () => void) => {
+app.use(async (req: Request, res: Response, next: () => void) => {
   if (!req.path.startsWith('/api/') || PUBLIC_API.test(req.path)) { next(); return; }
-  const u = sessionUser(req);
-  if (!u) { res.status(401).json({ error: 'Not signed in' }); return; }
-  (req as Request & { user?: UserRec }).user = u;
-  next();
+  try {
+    const u = await sessionUser(req);
+    if (!u) { res.status(401).json({ error: 'Not signed in' }); return; }
+    (req as Request & { user?: UserRec }).user = u;
+    next();
+  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
 const reqUser = (req: Request): UserRec => (req as Request & { user: UserRec }).user;
-function canAccess(u: UserRec, projectName: string): boolean {
+async function canAccess(u: UserRec, projectName: string): Promise<boolean> {
   if (u.role === 'admin' || u.projectIds === '*') return true;
-  const p = loadProjects().find(x => x.name === projectName);
+  const p = (await loadProjects()).find(x => x.name === projectName);
   return !!p && u.projectIds.includes(p.id);
 }
 
 // Who am I (also tells the login screen whether first-run setup is needed)
-app.get('/api/auth/me', (req: Request, res: Response) => {
-  const u = sessionUser(req);
-  if (!u) { res.json({ user: null, needsSetup: loadUsers().length === 0 }); return; }
+app.get('/api/auth/me', async (req: Request, res: Response) => {
+  const u = await sessionUser(req);
+  if (!u) { res.json({ user: null, needsSetup: (await loadUsers()).length === 0 }); return; }
   res.json({ user: { id: u.id, email: u.email, name: u.name, role: u.role, mustChangePassword: u.mustChangePassword } });
 });
 // First run: create the founding admin (only while no users exist)
-app.post('/api/auth/setup', (req: Request, res: Response) => {
-  if (loadUsers().length) { res.status(403).json({ error: 'Already set up' }); return; }
+app.post('/api/auth/setup', async (req: Request, res: Response) => {
+  if ((await loadUsers()).length) { res.status(403).json({ error: 'Already set up' }); return; }
   const { email, name, password } = req.body as { email: string; name: string; password: string };
   if (!validEmail(email || '')) { res.status(400).json({ error: `Use your ${EMAIL_DOMAIN} email` }); return; }
   if (!password || password.length < 10) { res.status(400).json({ error: 'Password must be at least 10 characters' }); return; }
   const salt = crypto.randomBytes(16).toString('hex');
   const u: UserRec = { id: crypto.randomUUID(), email: email.toLowerCase(), name: (name || email).trim(), role: 'admin',
     hash: hashPassword(password, salt), salt, mustChangePassword: false, projectIds: '*', createdAt: new Date().toISOString() };
-  saveUsers([u]); startSession(res, u.id);
+  await saveUsers([u]); await startSession(res, u.id);
   res.json({ ok: true });
 });
-app.post('/api/auth/login', (req: Request, res: Response) => {
+app.post('/api/auth/login', async (req: Request, res: Response) => {
   const { email, password } = req.body as { email: string; password: string };
   const key = (email || '').toLowerCase();
   const fail = loginFails.get(key);
   if (fail && fail.until > Date.now()) { res.status(429).json({ error: 'Too many attempts — try again in a few minutes' }); return; }
-  const u = loadUsers().find(x => x.email === key);
+  const u = (await loadUsers()).find(x => x.email === key);
   if (!u || !checkPassword(u, password || '')) {
     const n = (fail?.n ?? 0) + 1;
     loginFails.set(key, { n, until: n >= 5 ? Date.now() + 10 * 60_000 : 0 });
     res.status(401).json({ error: 'Wrong email or password' }); return;
   }
   loginFails.delete(key);
-  startSession(res, u.id);
+  await startSession(res, u.id);
   res.json({ ok: true, mustChangePassword: u.mustChangePassword });
 });
-app.post('/api/auth/logout', (req: Request, res: Response) => {
+app.post('/api/auth/logout', async (req: Request, res: Response) => {
   const sid = cookieSid(req);
-  if (sid) { sessions.delete(sid); saveSessions(); }
+  if (sid) await sessDel(sid);
   res.setHeader('Set-Cookie', 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
   res.json({ ok: true });
 });
-app.post('/api/auth/change-password', (req: Request, res: Response) => {
+app.post('/api/auth/change-password', async (req: Request, res: Response) => {
   const u = reqUser(req);
   const { current, next: nextPw } = req.body as { current: string; next: string };
-  const all = loadUsers(); const me = all.find(x => x.id === u.id)!;
+  const all = await loadUsers(); const me = all.find(x => x.id === u.id)!;
   if (!me.mustChangePassword && !checkPassword(me, current || '')) { res.status(401).json({ error: 'Current password is wrong' }); return; }
   if (me.mustChangePassword && current && !checkPassword(me, current)) { res.status(401).json({ error: 'Current password is wrong' }); return; }
   if (!nextPw || nextPw.length < 10) { res.status(400).json({ error: 'New password must be at least 10 characters' }); return; }
   me.salt = crypto.randomBytes(16).toString('hex');
   me.hash = hashPassword(nextPw, me.salt);
   me.mustChangePassword = false;
-  saveUsers(all);
+  await saveUsers(all);
   res.json({ ok: true });
 });
-app.post('/api/auth/profile', (req: Request, res: Response) => {
+app.post('/api/auth/profile', async (req: Request, res: Response) => {
   const u = reqUser(req);
   const { name } = req.body as { name?: string };
-  const all = loadUsers(); const me = all.find(x => x.id === u.id)!;
+  const all = await loadUsers(); const me = all.find(x => x.id === u.id)!;
   if (name?.trim()) me.name = name.trim().slice(0, 80);
-  saveUsers(all);
+  await saveUsers(all);
   res.json({ ok: true, name: me.name });
 });
 
@@ -158,15 +154,15 @@ function requireAdmin(req: Request, res: Response): boolean {
   if (reqUser(req).role !== 'admin') { res.status(403).json({ error: 'Admins only' }); return false; }
   return true;
 }
-app.get('/api/users', (req: Request, res: Response) => {
+app.get('/api/users', async (req: Request, res: Response) => {
   if (!requireAdmin(req, res)) return;
-  res.json({ users: loadUsers().map(u => ({ id: u.id, email: u.email, name: u.name, role: u.role, projectIds: u.projectIds, mustChangePassword: u.mustChangePassword })) });
+  res.json({ users: (await loadUsers()).map(u => ({ id: u.id, email: u.email, name: u.name, role: u.role, projectIds: u.projectIds, mustChangePassword: u.mustChangePassword })) });
 });
-app.post('/api/users', (req: Request, res: Response) => {
+app.post('/api/users', async (req: Request, res: Response) => {
   if (!requireAdmin(req, res)) return;
   const { id, email, name, role, projectIds, resetPassword } = req.body as
     { id?: string; email?: string; name?: string; role?: 'admin' | 'member'; projectIds?: string[] | '*'; resetPassword?: boolean };
-  const all = loadUsers();
+  const all = await loadUsers();
   let u = id ? all.find(x => x.id === id) : undefined;
   let tempPassword: string | undefined;
   if (!u) { // create: always with a temp password the admin hands over
@@ -188,18 +184,17 @@ app.post('/api/users', (req: Request, res: Response) => {
       u.mustChangePassword = true;
     }
   }
-  saveUsers(all);
+  await saveUsers(all);
   res.json({ id: u.id, email: u.email, tempPassword });
 });
-app.delete('/api/users/:id', (req: Request, res: Response) => {
+app.delete('/api/users/:id', async (req: Request, res: Response) => {
   if (!requireAdmin(req, res)) return;
   if (req.params.id === reqUser(req).id) { res.status(400).json({ error: "You can't delete your own account" }); return; }
-  const all = loadUsers();
+  const all = await loadUsers();
   const i = all.findIndex(x => x.id === req.params.id);
   if (i < 0) { res.status(404).json({ error: 'User not found' }); return; }
-  all.splice(i, 1); saveUsers(all);
-  for (const [sid, s] of sessions) if (s.userId === req.params.id) sessions.delete(sid);
-  saveSessions();
+  all.splice(i, 1); await saveUsers(all);
+  await sessDelByUser(req.params.id);
   res.json({ ok: true });
 });
 
@@ -438,29 +433,28 @@ function attachPdf(buf: Buffer, name: string, attachments: ContentBlock[]): stri
 }
 
 // ---------- Generated documents: the model drafts a standalone file, shown as a download card ----------
-const DOCS_DIR = path.join(__dirname, '.gendocs');
-fs.mkdirSync(DOCS_DIR, { recursive: true });
-interface GenDoc { title: string; markdown: string; project: string | null; at: number }
-function genDocFile(id: string): string {
+interface GenDoc { id?: string; title: string; markdown: string; project: string | null; at: number }
+function assertDocId(id: string): string {
   if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Bad document id');
-  return path.join(DOCS_DIR, id + '.json');
-}
-function saveGenDoc(title: string, markdown: string, project: string | null): string {
-  const id = crypto.randomUUID();
-  fs.writeFileSync(genDocFile(id), JSON.stringify({ title, markdown, project, at: Date.now() } as GenDoc));
   return id;
 }
-// Sweep documents older than 30 days at boot
-try {
-  const cut = Date.now() - 30 * 24 * 3600_000;
-  for (const f of fs.readdirSync(DOCS_DIR)) {
-    try { const d = JSON.parse(fs.readFileSync(path.join(DOCS_DIR, f), 'utf8')) as GenDoc; if (d.at < cut) fs.unlinkSync(path.join(DOCS_DIR, f)); } catch { /* skip */ }
-  }
-} catch { /* fresh */ }
+async function saveGenDoc(title: string, markdown: string, project: string | null): Promise<string> {
+  sweepGenDocs().catch(() => { /* best effort */ });
+  const id = crypto.randomUUID();
+  await docPut('gendocs', id, { id, title, markdown, project, at: Date.now() } as GenDoc);
+  return id;
+}
+// Sweep documents older than 30 days (lazy, at most once per process)
+let docsSwept = false;
+async function sweepGenDocs(): Promise<void> {
+  if (docsSwept) return; docsSwept = true;
+  try {
+    const cut = Date.now() - 30 * 24 * 3600_000;
+    for (const d of await docAll<GenDoc>('gendocs')) if (d.at < cut && d.id) await docDel('gendocs', d.id);
+  } catch { /* best effort */ }
+}
 
 // ---------- Bid Review Records: structured extraction saved per project, feeds the leveling builder ----------
-const BIDS_DIR = path.join(__dirname, '.bidrecords');
-fs.mkdirSync(BIDS_DIR, { recursive: true });
 interface AdjLine { item: string; value: number }
 interface BidRecord {
   id: string; project: string; trade: string; division: number | null; bidder: string; proposal_date: string;
@@ -471,19 +465,14 @@ interface BidRecord {
   bond: string; schedule: string; payment_terms: string; notes: string; sources: string[];
   createdAt: string;
 }
-function bidFile(id: string): string {
+function assertBidId(id: string): string {
   if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Bad record id');
-  return path.join(BIDS_DIR, id + '.json');
+  return id;
 }
-function loadBids(project?: string): BidRecord[] {
-  try {
-    return fs.readdirSync(BIDS_DIR).filter(f => f.endsWith('.json')).flatMap(f => {
-      try {
-        const r = JSON.parse(fs.readFileSync(path.join(BIDS_DIR, f), 'utf8')) as BidRecord;
-        return !project || r.project === project ? [r] : [];
-      } catch { return []; }
-    }).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-  } catch { return []; }
+async function loadBids(project?: string): Promise<BidRecord[]> {
+  return (await docAll<BidRecord>('bids'))
+    .filter(r => !project || r.project === project)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 const adjSum = (a: AdjLine[]) => a.reduce((s, x) => s + (Number(x.value) || 0), 0);
 const adjustedBid = (r: BidRecord) =>
@@ -559,7 +548,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   try {
     const { messages, project, docs, images } = req.body as ChatRequest;
     if (!process.env.ANTHROPIC_API_KEY) { send({ type: 'error', error: 'ANTHROPIC_API_KEY missing in .env' }); res.end(); return; }
-    if (project && !canAccess(reqUser(req), project)) { send({ type: 'error', error: 'You don\'t have access to this project.' }); res.end(); return; }
+    if (project && !(await canAccess(reqUser(req), project))) { send({ type: 'error', error: 'You don\'t have access to this project.' }); res.end(); return; }
     anthropic ??= new Anthropic();
     // Attached photos become image blocks on the latest user message so the model actually sees them
     if (images?.length) {
@@ -580,7 +569,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       : '\n\nNo project is selected, so the file tools are disabled. If you need project documents, ask the user to click "Work in this project" on a project first.');
     // Project knowledge (claude.ai-style): instructions + stored docs ground every chat in the project
     if (project) {
-      const rec = loadProjects().find(p => p.name === project);
+      const rec = (await loadProjects()).find(p => p.name === project);
       if (rec?.instructions) sys += `\n\nPROJECT INSTRUCTIONS (set by the team for ${project} — follow them):\n${rec.instructions}`;
       // Folder uploads can hold up to 100 files, so cap what rides in the prompt (~150k tokens)
       let knBudget = 600_000;
@@ -707,14 +696,14 @@ app.post('/api/chat', async (req: Request, res: Response) => {
                 notes: String(inp.notes ?? '').slice(0, 4000), sources: (inp.sources ?? []).slice(0, 20).map(String),
                 createdAt: new Date().toISOString()
               };
-              fs.writeFileSync(bidFile(rec.id), JSON.stringify(rec, null, 1));
+              await docPut('bids', rec.id, rec);
               act(`Saved bid record — ${rec.bidder} (${rec.trade})`);
               send({ type: 'bidrecord', id: rec.id, bidder: rec.bidder, trade: rec.trade, adjusted: adjustedBid(rec) });
               result = `Bid record saved (adjusted bid computes to ${adjustedBid(rec)}). It appears on the project page under Bid records & leveling. Keep your reply concise.`;
             }
           } else if (block.name === 'create_document') {
             const title = String(input.title ?? 'Document').slice(0, 120);
-            const id = saveGenDoc(title, String(input.content ?? ''), project ?? null);
+            const id = await saveGenDoc(title, String(input.content ?? ''), project ?? null);
             act(`Drafted document “${title}”`);
             send({ type: 'document', docId: id, title });
             result = 'Document created — the user sees a download card for it. Keep your reply to one or two sentences; do not repeat the document.';
@@ -771,35 +760,34 @@ const PROJECT_SEED: [string, string][] = [
   ['Avery Cypress Creek', 'Scope dispute · Div 26 · FPL vault credit · position memo'],
   ['Rivertowne Square', 'GMP Phase 1 · Bid review §5/§24 · risk classes']
 ];
-function loadProjects(): ProjectRec[] {
-  try { return JSON.parse(fs.readFileSync(PROJECTS_FILE, 'utf8')) as ProjectRec[]; }
-  catch {
-    const now = new Date().toISOString();
-    const seeded = PROJECT_SEED.map(([name, description]) =>
-      ({ id: crypto.randomUUID(), name, description, instructions: '', knowledge: [], createdAt: now, updatedAt: now }));
-    try { fs.writeFileSync(PROJECTS_FILE, JSON.stringify(seeded, null, 1)); } catch { /* read-only fs */ }
-    return seeded;
-  }
+async function loadProjects(): Promise<ProjectRec[]> {
+  const stored = await kvGet<ProjectRec[]>('projects');
+  if (stored) return stored;
+  const now = new Date().toISOString();
+  const seeded = PROJECT_SEED.map(([name, description]) =>
+    ({ id: crypto.randomUUID(), name, description, instructions: '', knowledge: [], createdAt: now, updatedAt: now }));
+  try { await kvSet('projects', seeded); } catch { /* read-only */ }
+  return seeded;
 }
-function saveProjects(all: ProjectRec[]) { fs.writeFileSync(PROJECTS_FILE, JSON.stringify(all, null, 1)); }
+async function saveProjects(all: ProjectRec[]): Promise<void> { await kvSet('projects', all); }
 
-app.get('/api/projects', (req: Request, res: Response) => {
+app.get('/api/projects', async (req: Request, res: Response) => {
   const u = reqUser(req);
-  const mine = loadProjects().filter(p => u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id));
+  const mine = (await loadProjects()).filter(p => u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id));
   res.json({ projects: mine.map(p => ({ id: p.id, name: p.name, description: p.description, updatedAt: p.updatedAt, knowledgeCount: p.knowledge.length, hasInstructions: !!p.instructions })) });
 });
-app.get('/api/projects/:id', (req: Request, res: Response) => {
-  const p = loadProjects().find(x => x.id === req.params.id);
+app.get('/api/projects/:id', async (req: Request, res: Response) => {
+  const p = (await loadProjects()).find(x => x.id === req.params.id);
   if (!p) { res.status(404).json({ error: 'Project not found' }); return; }
   const u = reqUser(req);
   if (!(u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id))) { res.status(403).json({ error: 'No access to this project' }); return; }
   res.json(p);
 });
 // Create (no id) or update (id) — partial updates allowed
-app.post('/api/projects', (req: Request, res: Response) => {
+app.post('/api/projects', async (req: Request, res: Response) => {
   const { id, name, description, instructions, knowledge } = req.body as
     { id?: string; name?: string; description?: string; instructions?: string; knowledge?: { name: string; text: string }[] };
-  const all = loadProjects();
+  const all = await loadProjects();
   const now = new Date().toISOString();
   let p = id ? all.find(x => x.id === id) : undefined;
   if (id && !p) { res.status(404).json({ error: 'Project not found' }); return; }
@@ -810,8 +798,8 @@ app.post('/api/projects', (req: Request, res: Response) => {
       createdBy: creator.name || creator.email, createdAt: now, updatedAt: now };
     all.push(p);
     if (creator.role !== 'admin' && creator.projectIds !== '*') {
-      const users = loadUsers(); const cu = users.find(x => x.id === creator.id);
-      if (cu && cu.projectIds !== '*') { (cu.projectIds as string[]).push(p.id); saveUsers(users); }
+      const users = await loadUsers(); const cu = users.find(x => x.id === creator.id);
+      if (cu && cu.projectIds !== '*') { (cu.projectIds as string[]).push(p.id); await saveUsers(users); }
     }
   }
   if (name !== undefined && name.trim() && name.trim() !== p.name) {
@@ -819,10 +807,8 @@ app.post('/api/projects', (req: Request, res: Response) => {
     const oldName = p.name;
     p.name = name.trim();
     try {
-      for (const f of fs.readdirSync(CHATS_DIR).filter(x => x.endsWith('.json'))) {
-        const file = path.join(CHATS_DIR, f);
-        const c = JSON.parse(fs.readFileSync(file, 'utf8')) as StoredChat;
-        if (c.project === oldName) { c.project = p.name; fs.writeFileSync(file, JSON.stringify(c)); }
+      for (const c of await docAll<StoredChat>('chats')) {
+        if (c.project === oldName) { c.project = p.name; await docPut('chats', c.id, c); }
       }
     } catch { /* best effort */ }
   }
@@ -830,40 +816,40 @@ app.post('/api/projects', (req: Request, res: Response) => {
   if (instructions !== undefined) p.instructions = String(instructions).slice(0, 20_000);
   if (knowledge !== undefined) p.knowledge = knowledge.slice(0, 100).map(k => ({ name: String(k.name).slice(0, 300), text: String(k.text).slice(0, 150_000) }));
   p.updatedAt = now;
-  saveProjects(all);
+  await saveProjects(all);
   res.json(p);
 });
-app.delete('/api/projects/:id', (req: Request, res: Response) => {
+app.delete('/api/projects/:id', async (req: Request, res: Response) => {
   if (reqUser(req).role !== 'admin') { res.status(403).json({ error: 'Admins only' }); return; }
-  const all = loadProjects();
+  const all = await loadProjects();
   const i = all.findIndex(x => x.id === req.params.id);
   if (i < 0) { res.status(404).json({ error: 'Project not found' }); return; }
-  all.splice(i, 1); saveProjects(all);
+  all.splice(i, 1); await saveProjects(all);
   res.json({ ok: true });
 });
 
 // Sharing, claude.ai style: who has access, and grant/revoke it per project
-function projectMembers(p: ProjectRec) {
-  return loadUsers()
+async function projectMembers(p: ProjectRec) {
+  return (await loadUsers())
     .filter(x => x.role === 'admin' || x.projectIds === '*' || x.projectIds.includes(p.id))
     .map(x => ({ id: x.id, name: x.name, email: x.email,
       via: x.role === 'admin' ? 'admin' : x.projectIds === '*' ? 'all' : 'shared' }));
 }
-app.get('/api/projects/:id/members', (req: Request, res: Response) => {
-  const p = loadProjects().find(x => x.id === req.params.id);
+app.get('/api/projects/:id/members', async (req: Request, res: Response) => {
+  const p = (await loadProjects()).find(x => x.id === req.params.id);
   if (!p) { res.status(404).json({ error: 'Project not found' }); return; }
   const u = reqUser(req);
   if (!(u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id))) { res.status(403).json({ error: 'No access to this project' }); return; }
-  res.json({ createdBy: p.createdBy || null, members: projectMembers(p) });
+  res.json({ createdBy: p.createdBy || null, members: await projectMembers(p) });
 });
 // Anyone with access can share with an existing @straticon.com account; only admins can revoke
-app.post('/api/projects/:id/share', (req: Request, res: Response) => {
-  const p = loadProjects().find(x => x.id === req.params.id);
+app.post('/api/projects/:id/share', async (req: Request, res: Response) => {
+  const p = (await loadProjects()).find(x => x.id === req.params.id);
   if (!p) { res.status(404).json({ error: 'Project not found' }); return; }
   const u = reqUser(req);
   if (!(u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id))) { res.status(403).json({ error: 'No access to this project' }); return; }
   const { email, remove } = req.body as { email?: string; remove?: boolean };
-  const users = loadUsers();
+  const users = await loadUsers();
   const target = users.find(x => x.email.toLowerCase() === String(email || '').trim().toLowerCase());
   if (!target) { res.status(404).json({ error: 'No account with that email — ask an admin to add them under People & access first' }); return; }
   if (remove) {
@@ -873,54 +859,51 @@ app.post('/api/projects/:id/share', (req: Request, res: Response) => {
   } else if (target.role !== 'admin' && target.projectIds !== '*' && !target.projectIds.includes(p.id)) {
     target.projectIds.push(p.id);
   }
-  saveUsers(users);
-  res.json({ createdBy: p.createdBy || null, members: projectMembers(p) });
+  await saveUsers(users);
+  res.json({ createdBy: p.createdBy || null, members: await projectMembers(p) });
 });
 
-// ---------- Chat persistence: one JSON per chat in .chats/ ----------
-const CHATS_DIR = path.join(__dirname, '.chats');
-fs.mkdirSync(CHATS_DIR, { recursive: true });
-
+// ---------- Chat persistence: one JSON per chat (files locally, Postgres on Vercel) ----------
 interface StoredChat { id: string; title: string; project: string | null; messages: ChatMessage[]; createdAt: string; updatedAt: string }
-function chatFile(id: string): string {
+function assertChatId(id: string): string {
   if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Bad chat id');
-  return path.join(CHATS_DIR, id + '.json');
+  return id;
 }
 
-// List chats, newest first (titles only — bodies stay on disk)
-app.get('/api/chats', (_req: Request, res: Response) => {
-  const chats = fs.readdirSync(CHATS_DIR).filter(f => f.endsWith('.json')).flatMap(f => {
-    try {
-      const c = JSON.parse(fs.readFileSync(path.join(CHATS_DIR, f), 'utf8')) as StoredChat;
-      return [{ id: c.id, title: c.title, project: c.project, updatedAt: c.updatedAt }];
-    } catch { return []; }
-  }).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+// List chats, newest first (titles only — bodies stay in the store)
+app.get('/api/chats', async (_req: Request, res: Response) => {
+  const chats = (await docAll<StoredChat>('chats'))
+    .map(c => ({ id: c.id, title: c.title, project: c.project, updatedAt: c.updatedAt }))
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
   res.json({ chats });
 });
 
-app.get('/api/chats/:id', (req: Request, res: Response) => {
-  try { res.json(JSON.parse(fs.readFileSync(chatFile(req.params.id), 'utf8'))); }
-  catch { res.status(404).json({ error: 'Chat not found' }); }
+app.get('/api/chats/:id', async (req: Request, res: Response) => {
+  try {
+    const c = await docGet<StoredChat>('chats', assertChatId(req.params.id));
+    if (!c) throw new Error('not found');
+    res.json(c);
+  } catch { res.status(404).json({ error: 'Chat not found' }); }
 });
 
 // Create or update a chat; the title comes from the first user message unless already set.
 // A call with {id, title} and no messages is a rename.
-app.post('/api/chats', (req: Request, res: Response) => {
+app.post('/api/chats', async (req: Request, res: Response) => {
   try {
     const body = req.body as { id?: string; project?: string | null; messages?: ChatMessage[]; title?: string };
     const { id, title } = body;
     let { project, messages } = body;
     const now = new Date().toISOString();
-    const cid = id || crypto.randomUUID();
+    const cid = assertChatId(id || crypto.randomUUID());
     let createdAt = now;
     let t = title;
-    try {
-      const prev = JSON.parse(fs.readFileSync(chatFile(cid), 'utf8')) as StoredChat;
+    const prev = await docGet<StoredChat>('chats', cid);
+    if (prev) {
       createdAt = prev.createdAt;
       if (title) t = title; else t = prev.title; // explicit title wins (rename)
       messages ??= prev.messages;               // rename-only calls omit messages
       project ??= prev.project;
-    } catch { /* new chat */ }
+    }
     if (!Array.isArray(messages)) { res.status(400).json({ error: 'messages required' }); return; }
     if (!t) {
       const first = messages.find(m => m.role === 'user');
@@ -928,33 +911,32 @@ app.post('/api/chats', (req: Request, res: Response) => {
       t = s.length > 60 ? (s.slice(0, 60).replace(/\s+\S*$/, '') || s.slice(0, 60)) + '…' : s || 'New chat';
     }
     const chat: StoredChat = { id: cid, title: t, project: project ?? null, messages, createdAt, updatedAt: now };
-    fs.writeFileSync(chatFile(cid), JSON.stringify(chat));
+    await docPut('chats', cid, chat);
     res.json({ id: cid, title: t });
   } catch (e) { res.status(400).json({ error: (e as Error).message }); }
 });
 
-app.delete('/api/chats/:id', (req: Request, res: Response) => {
-  try { fs.unlinkSync(chatFile(req.params.id)); res.json({ ok: true }); }
-  catch { res.status(404).json({ error: 'Chat not found' }); }
+app.delete('/api/chats/:id', async (req: Request, res: Response) => {
+  try {
+    if (!(await docDel('chats', assertChatId(req.params.id)))) throw new Error('not found');
+    res.json({ ok: true });
+  } catch { res.status(404).json({ error: 'Chat not found' }); }
 });
 
 // ---------- Your data (claude.ai style): everything Straticon ai stores on this machine, per account ----------
-function userDataSummary(u: UserRec) {
-  const projects = loadProjects().filter(p => u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id));
+async function userDataSummary(u: UserRec) {
+  const projects = (await loadProjects()).filter(p => u.role === 'admin' || u.projectIds === '*' || u.projectIds.includes(p.id));
   const names = new Set(projects.map(p => p.name));
-  const chats = fs.readdirSync(CHATS_DIR).filter(f => f.endsWith('.json')).flatMap(f => {
-    try { return [JSON.parse(fs.readFileSync(path.join(CHATS_DIR, f), 'utf8')) as StoredChat]; } catch { return []; }
-  }).filter(c => !c.project || names.has(c.project));
-  const bids = loadBids().filter(b => names.has(b.project));
-  const docs = fs.readdirSync(DOCS_DIR).filter(f => f.endsWith('.json')).flatMap(f => {
-    try { const d = JSON.parse(fs.readFileSync(path.join(DOCS_DIR, f), 'utf8')) as GenDoc;
-      return [{ id: f.slice(0, -5), title: d.title, project: d.project, at: d.at }]; } catch { return []; }
-  }).filter(d => !d.project || names.has(d.project));
+  const chats = (await docAll<StoredChat>('chats')).filter(c => !c.project || names.has(c.project));
+  const bids = (await loadBids()).filter(b => names.has(b.project));
+  const docs = (await docAll<GenDoc & { id?: string }>('gendocs'))
+    .map(d => ({ id: d.id || '', title: d.title, project: d.project, at: d.at, markdown: d.markdown }))
+    .filter(d => !d.project || names.has(d.project));
   return { projects, chats, bids, docs };
 }
-app.get('/api/account/data', (req: Request, res: Response) => {
+app.get('/api/account/data', async (req: Request, res: Response) => {
   const u = reqUser(req);
-  const { projects, chats, bids, docs } = userDataSummary(u);
+  const { projects, chats, bids, docs } = await userDataSummary(u);
   res.json({
     account: { name: u.name, email: u.email, role: u.role, createdAt: u.createdAt,
       access: (u.role === 'admin' || u.projectIds === '*') ? 'All projects' : (u.projectIds as string[]).length + ' project(s)' },
@@ -968,14 +950,14 @@ app.get('/api/account/data', (req: Request, res: Response) => {
   });
 });
 // One-file export of everything the account can see — full chats, knowledge, records, document texts
-app.get('/api/account/export', (req: Request, res: Response) => {
+app.get('/api/account/export', async (req: Request, res: Response) => {
   const u = reqUser(req);
-  const { projects, chats, bids, docs } = userDataSummary(u);
+  const { projects, chats, bids, docs } = await userDataSummary(u);
   const full = {
     exportedAt: new Date().toISOString(),
     account: { name: u.name, email: u.email, role: u.role, createdAt: u.createdAt },
     projects, chats, bidRecords: bids,
-    documents: docs.map(d => { try { return { id: d.id, ...(JSON.parse(fs.readFileSync(genDocFile(d.id), 'utf8')) as GenDoc) }; } catch { return d; } })
+    documents: docs
   };
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName('Straticon ai export ' + new Date().toISOString().slice(0, 10))}.json"`);
@@ -1028,8 +1010,9 @@ app.get('/api/autodesk/projects/:projId/folders/:folderId/contents',
   apsRoute(r => `/data/v1/projects/${r.params.projId}/folders/${r.params.folderId}/contents`));
 
 // ---------- File text extraction cache ----------
-const CACHE_DIR = path.join(__dirname, '.cache');
-fs.mkdirSync(CACHE_DIR, { recursive: true });
+// Extraction/index caches are best-effort: on Vercel the bundle dir is read-only, so they live in /tmp
+const CACHE_DIR = process.env.VERCEL ? path.join('/tmp', 'precon-cache') : path.join(__dirname, '.cache');
+try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch { /* read-only fs */ }
 
 // ---------- Microsoft Graph (SharePoint / Teams files) ----------
 let msToken: string | null = null;
@@ -1304,15 +1287,29 @@ app.get('/api/templates', async (req: Request, res: Response) => {
   try {
     const project = String(req.query.project || '');
     if (!project) { res.status(400).json({ error: 'project required' }); return; }
-    if (!canAccess(reqUser(req), project)) { res.status(403).json({ error: 'No access to this project' }); return; }
+    if (!(await canAccess(reqUser(req), project))) { res.status(403).json({ error: 'No access to this project' }); return; }
     const c = await templateCatalog(project);
     res.json({ masters: c.masters, categories: c.categories });
   } catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
 
 // In-progress fills: template bytes + metadata, kept half an hour
-const fills = new Map<string, { buf: Buffer; name: string; driveId: string; itemId: string; project: string | null; at: number }>();
-setInterval(() => { const cut = Date.now() - 30 * 60_000; for (const [k, v] of fills) if (v.at < cut) fills.delete(k); }, 5 * 60_000).unref();
+// Fill sessions (30-min TTL) go through the store so they survive serverless instance hops
+interface FillMeta { name: string; driveId: string; itemId: string; project: string | null; at: number }
+async function fillSet(id: string, meta: FillMeta, buf: Buffer): Promise<void> {
+  await docPut('fills', id, meta);
+  await binPut('fills', id, buf);
+}
+async function fillGet(id: string): Promise<(FillMeta & { buf: Buffer }) | null> {
+  if (!/^[0-9a-f-]{36}$/.test(id)) return null;
+  const meta = await docGet<FillMeta>('fills', id);
+  if (!meta || meta.at < Date.now() - 30 * 60_000) {
+    if (meta) { await docDel('fills', id); await binDel('fills', id); }
+    return null;
+  }
+  const buf = await binGet('fills', id);
+  return buf ? { ...meta, buf } : null;
+}
 
 interface TplEdit { sheet: string; cell: string; label: string; value: string }
 
@@ -1321,7 +1318,7 @@ app.post('/api/templates/fill', async (req: Request, res: Response) => {
   try {
     const { project, driveId, itemId, name, info } = req.body as { project?: string; driveId: string; itemId: string; name: string; info: string };
     if (!driveId || !itemId || !info?.trim()) { res.status(400).json({ error: 'driveId, itemId and info required' }); return; }
-    if (project && !canAccess(reqUser(req), project)) { res.status(403).json({ error: 'No access to this project' }); return; }
+    if (project && !(await canAccess(reqUser(req), project))) { res.status(403).json({ error: 'No access to this project' }); return; }
     const buf = await sharepointBytes(driveId, itemId);
 
     const { default: ExcelJS } = await import('exceljs');
@@ -1359,43 +1356,43 @@ app.post('/api/templates/fill', async (req: Request, res: Response) => {
     try { edits = JSON.parse(jsonStr); } catch { res.status(502).json({ error: 'The model did not return valid edits — try rephrasing the info.' }); return; }
 
     const fillId = crypto.randomUUID();
-    fills.set(fillId, { buf, name, driveId, itemId, project: project || null, at: Date.now() });
+    await fillSet(fillId, { name, driveId, itemId, project: project || null, at: Date.now() }, buf);
     res.json({ fillId, edits });
   } catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
 
 // Finalize: apply (possibly user-adjusted) edits, then download as .xlsx/.pdf or save to SharePoint
 // ---------- Scope sheets: finalized template fills, kept per project like chat history ----------
-const SHEETS_DIR = path.join(__dirname, '.scopesheets');
-fs.mkdirSync(SHEETS_DIR, { recursive: true });
 interface SheetMeta { id: string; project: string | null; fileName: string; template: string; cells: number; lastAction: string; by: string; createdAt: string }
-app.get('/api/scopesheets', (req: Request, res: Response) => {
+app.get('/api/scopesheets', async (req: Request, res: Response) => {
   const project = String(req.query.project || '');
   if (!project) { res.status(400).json({ error: 'project required' }); return; }
-  if (!canAccess(reqUser(req), project)) { res.status(403).json({ error: 'No access to this project' }); return; }
-  const sheets = fs.readdirSync(SHEETS_DIR).filter(f => f.endsWith('.json')).flatMap(f => {
-    try { return [JSON.parse(fs.readFileSync(path.join(SHEETS_DIR, f), 'utf8')) as SheetMeta]; } catch { return []; }
-  }).filter(s => s.project === project).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  if (!(await canAccess(reqUser(req), project))) { res.status(403).json({ error: 'No access to this project' }); return; }
+  const sheets = (await docAll<SheetMeta>('sheets'))
+    .filter(s => s.project === project).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   res.json({ sheets });
 });
-app.get('/api/scopesheets/:id/xlsx', (req: Request, res: Response) => {
+app.get('/api/scopesheets/:id/xlsx', async (req: Request, res: Response) => {
   try {
     if (!/^[0-9a-f-]{36}$/.test(req.params.id)) throw new Error('bad id');
-    const meta = JSON.parse(fs.readFileSync(path.join(SHEETS_DIR, req.params.id + '.json'), 'utf8')) as SheetMeta;
-    if (meta.project && !canAccess(reqUser(req), meta.project)) { res.status(403).json({ error: 'No access to this project' }); return; }
-    const buf = fs.readFileSync(path.join(SHEETS_DIR, req.params.id + '.xlsx'));
+    const meta = await docGet<SheetMeta>('sheets', req.params.id);
+    if (!meta) throw new Error('not found');
+    if (meta.project && !(await canAccess(reqUser(req), meta.project))) { res.status(403).json({ error: 'No access to this project' }); return; }
+    const buf = await binGet('sheets', req.params.id);
+    if (!buf) throw new Error('not found');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${headerSafeName(meta.fileName || 'scope')}.xlsx"`);
     res.send(buf);
   } catch { res.status(404).json({ error: 'Scope sheet not found' }); }
 });
-app.delete('/api/scopesheets/:id', (req: Request, res: Response) => {
+app.delete('/api/scopesheets/:id', async (req: Request, res: Response) => {
   try {
     if (!/^[0-9a-f-]{36}$/.test(req.params.id)) throw new Error('bad id');
-    const meta = JSON.parse(fs.readFileSync(path.join(SHEETS_DIR, req.params.id + '.json'), 'utf8')) as SheetMeta;
-    if (meta.project && !canAccess(reqUser(req), meta.project)) { res.status(403).json({ error: 'No access to this project' }); return; }
-    fs.unlinkSync(path.join(SHEETS_DIR, req.params.id + '.json'));
-    try { fs.unlinkSync(path.join(SHEETS_DIR, req.params.id + '.xlsx')); } catch { /* meta only */ }
+    const meta = await docGet<SheetMeta>('sheets', req.params.id);
+    if (!meta) throw new Error('not found');
+    if (meta.project && !(await canAccess(reqUser(req), meta.project))) { res.status(403).json({ error: 'No access to this project' }); return; }
+    await docDel('sheets', req.params.id);
+    await binDel('sheets', req.params.id);
     res.json({ ok: true });
   } catch { res.status(404).json({ error: 'Scope sheet not found' }); }
 });
@@ -1403,7 +1400,7 @@ app.delete('/api/scopesheets/:id', (req: Request, res: Response) => {
 app.post('/api/templates/finalize', async (req: Request, res: Response) => {
   try {
     const { fillId, edits, action, fileName } = req.body as { fillId: string; edits: TplEdit[]; action: 'xlsx' | 'pdf' | 'sharepoint' | 'onedrive'; fileName: string };
-    const fill = fills.get(fillId);
+    const fill = await fillGet(fillId);
     if (!fill) { res.status(410).json({ error: 'This fill session expired — fill the template again.' }); return; }
     const safeName = (fileName || 'scope').replace(/[\\/:*?"<>|]/g, '-').trim();
 
@@ -1425,11 +1422,11 @@ app.post('/api/templates/finalize', async (req: Request, res: Response) => {
     // Keyed by fillId, so re-finalizing the same fill updates one record instead of duplicating.
     try {
       if (/^[0-9a-f-]{36}$/.test(fillId)) {
-        fs.writeFileSync(path.join(SHEETS_DIR, fillId + '.xlsx'), new Uint8Array(out));
-        fs.writeFileSync(path.join(SHEETS_DIR, fillId + '.json'), JSON.stringify({
+        await binPut('sheets', fillId, out);
+        await docPut('sheets', fillId, {
           id: fillId, project: fill.project, fileName: headerSafeName(safeName), template: fill.name,
           cells: (edits ?? []).length, lastAction: action, by: reqUser(req).name, createdAt: new Date().toISOString()
-        }));
+        });
       }
     } catch (e) { console.error('[scopesheets] save failed:', (e as Error).message); }
 
@@ -1506,10 +1503,9 @@ app.post('/api/document', async (req: Request, res: Response) => {
     let { title, project, markdown } = body;
     const { format, docId, to } = body;
     if (docId) { // a model-generated document: clean content stored server-side
-      try {
-        const d = JSON.parse(fs.readFileSync(genDocFile(docId), 'utf8')) as GenDoc;
-        title = d.title; markdown = d.markdown; project = d.project;
-      } catch { res.status(410).json({ error: 'This document has expired — ask Straticon ai to draft it again.' }); return; }
+      const d = await docGet<GenDoc>('gendocs', assertDocId(docId)).catch(() => null);
+      if (!d) { res.status(410).json({ error: 'This document has expired — ask Straticon ai to draft it again.' }); return; }
+      title = d.title; markdown = d.markdown; project = d.project;
     }
     if (!markdown?.trim()) { res.status(400).json({ error: 'markdown required' }); return; }
     const docTitle = (title || 'Straticon Pre-Construction').slice(0, 120);
@@ -1631,18 +1627,19 @@ app.post('/api/document', async (req: Request, res: Response) => {
 });
 
 // ---------- Bid record routes + Excel builders (record workbook, leveling sheet) ----------
-app.get('/api/bidrecords', (req: Request, res: Response) => {
+app.get('/api/bidrecords', async (req: Request, res: Response) => {
   const project = String(req.query.project || '');
   if (!project) { res.status(400).json({ error: 'project required' }); return; }
-  if (!canAccess(reqUser(req), project)) { res.status(403).json({ error: 'No access to this project' }); return; }
-  res.json({ records: loadBids(project).map(r => ({ id: r.id, trade: r.trade, division: r.division, bidder: r.bidder,
+  if (!(await canAccess(reqUser(req), project))) { res.status(403).json({ error: 'No access to this project' }); return; }
+  res.json({ records: (await loadBids(project)).map(r => ({ id: r.id, trade: r.trade, division: r.division, bidder: r.bidder,
     proposal_date: r.proposal_date, base_bid: r.base_bid, adjusted: adjustedBid(r), createdAt: r.createdAt })) });
 });
-app.delete('/api/bidrecords/:id', (req: Request, res: Response) => {
+app.delete('/api/bidrecords/:id', async (req: Request, res: Response) => {
   try {
-    const r = JSON.parse(fs.readFileSync(bidFile(req.params.id), 'utf8')) as BidRecord;
-    if (!canAccess(reqUser(req), r.project)) { res.status(403).json({ error: 'No access' }); return; }
-    fs.unlinkSync(bidFile(req.params.id)); res.json({ ok: true });
+    const r = await docGet<BidRecord>('bids', assertBidId(req.params.id));
+    if (!r) throw new Error('not found');
+    if (!(await canAccess(reqUser(req), r.project))) { res.status(403).json({ error: 'No access' }); return; }
+    await docDel('bids', r.id); res.json({ ok: true });
   } catch { res.status(404).json({ error: 'Record not found' }); }
 });
 
@@ -1709,8 +1706,9 @@ function headerSafeName(s: string): string {
 const CURRENCY = '"$"#,##0';
 app.get('/api/bidrecords/:id/xlsx', async (req: Request, res: Response) => {
   try {
-    const r = JSON.parse(fs.readFileSync(bidFile(req.params.id), 'utf8')) as BidRecord;
-    if (!canAccess(reqUser(req), r.project)) { res.status(403).json({ error: 'No access' }); return; }
+    const r = await docGet<BidRecord>('bids', assertBidId(req.params.id));
+    if (!r) throw new Error('not found');
+    if (!(await canAccess(reqUser(req), r.project))) { res.status(403).json({ error: 'No access' }); return; }
     const { default: ExcelJS } = await import('exceljs');
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Bid Review Record');
@@ -1761,8 +1759,8 @@ app.get('/api/leveling', async (req: Request, res: Response) => {
     const project = String(req.query.project || '');
     const trade = String(req.query.trade || '');
     if (!project || !trade) { res.status(400).json({ error: 'project and trade required' }); return; }
-    if (!canAccess(reqUser(req), project)) { res.status(403).json({ error: 'No access to this project' }); return; }
-    const recs = loadBids(project).filter(r => r.trade === trade);
+    if (!(await canAccess(reqUser(req), project))) { res.status(403).json({ error: 'No access to this project' }); return; }
+    const recs = (await loadBids(project)).filter(r => r.trade === trade);
     if (!recs.length) { res.status(404).json({ error: 'No bid records for that trade yet' }); return; }
 
     const { default: ExcelJS } = await import('exceljs');
@@ -1845,7 +1843,7 @@ app.post('/api/buyout-board', async (req: Request, res: Response) => {
   try {
     const { project, refresh } = req.body as { project: string; refresh?: boolean };
     if (!project) { res.status(400).json({ error: 'project required' }); return; }
-    if (!canAccess(reqUser(req), project)) { res.status(403).json({ error: 'No access to this project' }); return; }
+    if (!(await canAccess(reqUser(req), project))) { res.status(403).json({ error: 'No access to this project' }); return; }
     if (!refresh) {
       try {
         const cached = JSON.parse(fs.readFileSync(boardFile(project), 'utf8')) as { at: number };
@@ -1890,15 +1888,20 @@ const port = Number(process.env.PORT) || 3000;
 process.on('uncaughtException', e => console.error('[uncaughtException]', e));
 process.on('unhandledRejection', e => console.error('[unhandledRejection]', e));
 
-app.listen(port, () => {
-  console.log(`Straticon Pre-Con running → http://localhost:${port}`);
-  // Windows/Mac colleagues on the office network use this address:
-  try {
-    const os = require('os') as typeof import('os');
-    for (const ifaces of Object.values(os.networkInterfaces())) {
-      for (const i of ifaces ?? []) {
-        if (i.family === 'IPv4' && !i.internal) console.log(`           on your network → http://${i.address}:${port}`);
+// On Vercel the app is exported and invoked per request (api/index.ts); locally it listens.
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`Straticon Pre-Con running → http://localhost:${port}`);
+    // Windows/Mac colleagues on the office network use this address:
+    try {
+      const os = require('os') as typeof import('os');
+      for (const ifaces of Object.values(os.networkInterfaces())) {
+        for (const i of ifaces ?? []) {
+          if (i.family === 'IPv4' && !i.internal) console.log(`           on your network → http://${i.address}:${port}`);
+        }
       }
-    }
-  } catch { /* cosmetic */ }
-});
+    } catch { /* cosmetic */ }
+  });
+}
+
+export default app;
