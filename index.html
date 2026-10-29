@@ -385,10 +385,13 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;z-index:50;
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .overlay.show{display:flex}
-.modal{width:100%;max-width:420px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.5)}
+.modal{width:100%;max-width:420px;max-height:min(86vh,760px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.5)}
+.msec{font:600 .66rem var(--ui);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:20px 0 10px;display:flex;align-items:center;gap:10px}
+.msec::after{content:"";flex:1;height:1px;background:var(--line-soft)}
+.addform .msec:first-child{margin-top:4px}
 .modal h2{font-weight:600;font-size:1.1rem;letter-spacing:-.02em;margin:0 0 4px}
 .modal p.hint{color:var(--muted);font-size:.82rem;margin:0 0 16px}
-.modal.files{max-width:560px;max-height:78vh;display:flex;flex-direction:column}
+.modal.files{max-width:560px;max-height:78vh;display:flex;flex-direction:column;overflow:hidden}
 .fb-crumbs{display:flex;flex-wrap:wrap;gap:4px;font-size:.76rem;color:var(--muted);margin-bottom:10px}
 .fb-crumbs button{background:none;border:none;color:var(--accent);cursor:pointer;font:inherit;padding:0}
 .fb-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:2px;min-height:120px;scrollbar-width:thin}
@@ -633,11 +636,12 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
     <h2>Account settings</h2>
     <p class="hint" id="acctEmail"></p>
     <div class="addform">
+      <div class="msec">Profile</div>
       <label>Name<input id="acName" maxlength="80"></label>
-      <div class="addrow" style="justify-content:flex-start"><button type="button" class="pact primary" id="acSaveName">Save name</button></div>
-      <h2 style="font-size:.95rem;margin:14px 0 0">Connectors</h2>
+      <div class="addrow" style="justify-content:flex-start;margin-top:-2px"><button type="button" class="pact primary" id="acSaveName">Save name</button></div>
+      <div class="msec">Connectors</div>
       <div id="acConnectors" class="pp-empty">Checking connections…</div>
-      <h2 style="font-size:.95rem;margin:14px 0 0">Change password</h2>
+      <div class="msec">Change password</div>
       <label id="acCurWrap">Current password<input id="acCur" type="password" autocomplete="current-password"></label>
       <label>New password <span style="color:var(--faint);font-weight:400">(10+ characters)</span><input id="acNew" type="password" autocomplete="new-password"></label>
       <label>Confirm new password<input id="acNew2" type="password" autocomplete="new-password"></label>
