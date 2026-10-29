@@ -1505,6 +1505,33 @@ app.delete('/api/bidrecords/:id', (req: Request, res: Response) => {
   } catch { res.status(404).json({ error: 'Record not found' }); }
 });
 
+// ---------- Connectors panel: live health of each org-level integration ----------
+let connectorsCache: { at: number; forUser: string; list: unknown[] } | null = null;
+app.get('/api/connectors', async (req: Request, res: Response) => {
+  const u = reqUser(req);
+  if (connectorsCache && Date.now() - connectorsCache.at < 5 * 60_000 && connectorsCache.forUser === u.id) {
+    res.json({ connectors: connectorsCache.list, cachedAt: connectorsCache.at }); return;
+  }
+  const probe = async (fn: () => Promise<void>): Promise<{ status: string; detail: string }> => {
+    try { await fn(); return { status: 'connected', detail: '' }; }
+    catch (e) { return { status: 'error', detail: (e as Error).message.slice(0, 160) }; }
+  };
+  const [sp, od, acc] = await Promise.all([
+    probe(async () => { await graph('/sites?search=*&$select=id&$top=1'); }),
+    probe(async () => { await graph(`/users/${encodeURIComponent(u.email)}/drive?$select=id`); }),
+    probe(async () => { await aps('/project/v1/hubs'); })
+  ]);
+  const list = [
+    { name: 'Microsoft SharePoint / Teams', kind: 'Organization', scope: 'Project documents (read) + saves', ...sp },
+    { name: 'Microsoft OneDrive', kind: 'Per user (via your sign-in)', scope: `Saves to ${u.email}'s OneDrive → "Straticon ai" folder`, ...od },
+    { name: 'Autodesk ACC / BIM 360', kind: 'Organization', scope: 'Drawings, specs, project files (read)', ...acc },
+    { name: 'Anthropic Claude', kind: 'Organization', scope: 'Straticon ai model (' + (process.env.CLAUDE_MODEL || 'claude-sonnet-5-5') + ')',
+      status: process.env.ANTHROPIC_API_KEY ? 'connected' : 'error', detail: process.env.ANTHROPIC_API_KEY ? '' : 'ANTHROPIC_API_KEY missing' }
+  ];
+  connectorsCache = { at: Date.now(), forUser: u.id, list };
+  res.json({ connectors: list, cachedAt: connectorsCache.at });
+});
+
 // ---------- OneDrive: save generated files into the signed-in user's own OneDrive ----------
 // Uses Graph application permission Files.ReadWrite.All; files land in a "Straticon ai" folder.
 async function oneDriveUpload(email: string, fileName: string, buf: Buffer, mime: string): Promise<{ webUrl?: string }> {

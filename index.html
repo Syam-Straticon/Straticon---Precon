@@ -231,6 +231,11 @@ body.sidebar-pinned .shell{grid-template-columns:268px 1fr}
 .adm-projects{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:9px}
 .adm-projects label{display:flex;align-items:center;gap:5px;font-size:.76rem;color:var(--muted);cursor:pointer}
 .adm-temp{margin-top:8px;font:500 .8rem var(--mono);color:var(--accent);background:var(--accent-soft);border-radius:7px;padding:6px 10px;word-break:break-all}
+.connrow{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
+.connrow:last-of-type{border-bottom:none}
+.connrow .bchip{margin-top:2px;flex:none}
+.connmeta b{display:block;font-size:.84rem}
+.connmeta span{font-size:.73rem;color:var(--faint);line-height:1.45}
 .me{margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px;border:none;border-top:1px solid var(--line-soft);background:none;width:100%;text-align:left;cursor:pointer;border-radius:0 0 0 0;font-family:var(--ui);color:var(--fg);transition:background .12s}
 .me:hover{background:var(--raise)}
 .me .mechev{width:14px;height:14px;margin-left:auto;flex:none;stroke:var(--faint);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
@@ -630,6 +635,8 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
     <div class="addform">
       <label>Name<input id="acName" maxlength="80"></label>
       <div class="addrow" style="justify-content:flex-start"><button type="button" class="pact primary" id="acSaveName">Save name</button></div>
+      <h2 style="font-size:.95rem;margin:14px 0 0">Connectors</h2>
+      <div id="acConnectors" class="pp-empty">Checking connections…</div>
       <h2 style="font-size:.95rem;margin:14px 0 0">Change password</h2>
       <label id="acCurWrap">Current password<input id="acCur" type="password" autocomplete="current-password"></label>
       <label>New password <span style="color:var(--faint);font-weight:400">(10+ characters)</span><input id="acNew" type="password" autocomplete="new-password"></label>
@@ -1797,6 +1804,25 @@ function openAcct(forcePw){
   document.getElementById('acCurWrap').style.display=ME.mustChangePassword?'none':'';
   document.getElementById('acErr').textContent=forcePw?'Your password was reset by an admin.':'';
   acctOverlay.classList.add('show');
+  loadConnectors();
+}
+// Connectors status: what Straticon ai is wired to, claude.ai style
+async function loadConnectors(){
+  const box=document.getElementById('acConnectors');
+  box.textContent='Checking connections…';
+  try{
+    const d=await j('/api/connectors');
+    box.classList.remove('pp-empty'); box.innerHTML='';
+    d.connectors.forEach(c=>{
+      const row=document.createElement('div'); row.className='connrow';
+      row.innerHTML='<span class="bchip '+(c.status==='connected'?'ok':'no')+'">'+(c.status==='connected'?'CONNECTED':'ERROR')+'</span>'
+        +'<div class="connmeta"><b>'+esc(c.name)+'</b><span>'+esc(c.kind)+' · '+esc(c.scope)+(c.detail?' — '+esc(c.detail):'')+'</span></div>';
+      box.appendChild(row);
+    });
+    const note=document.createElement('div'); note.className='pp-cap';
+    note.textContent='Org connectors are configured by your admin in .env / Entra / APS. Per-user Microsoft sign-in (full connector) arrives with deployment.';
+    box.appendChild(note);
+  }catch(e){ box.textContent=e.message; }
 }
 document.getElementById('acClose').addEventListener('click',()=>acctOverlay.classList.remove('show'));
 acctOverlay.addEventListener('click',e=>{ if(e.target===acctOverlay&&!ME?.mustChangePassword) acctOverlay.classList.remove('show'); });
