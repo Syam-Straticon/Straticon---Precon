@@ -174,7 +174,8 @@ body.sidebar-pinned .shell{grid-template-columns:268px 1fr}
 .pp-back:hover{color:var(--fg)}
 .pp-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .pp-title h1{margin:0 auto 0 0;font-size:1.35rem;letter-spacing:-.02em}
-.pp-ask{display:flex;gap:9px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:7px 8px 7px 14px;box-shadow:0 4px 24px rgba(0,0,0,.14);transition:border-color .15s,box-shadow .15s}
+.pp-ask{position:relative;display:flex;align-items:center;gap:9px;margin-top:10px;background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:7px 8px 7px 8px;box-shadow:0 4px 24px rgba(0,0,0,.14);transition:border-color .15s,box-shadow .15s}
+.pp-ask .plusmenu{bottom:52px;left:6px}
 .pp-ask:focus-within{border-color:var(--accent-dim);box-shadow:var(--glow)}
 .pp-ask input{flex:1;background:none;border:none;outline:none;color:var(--fg);font:400 .92rem var(--ui)}
 .pp-title h1[contenteditable="true"]{outline:1px dashed var(--accent-dim);border-radius:6px;padding:0 6px}
@@ -474,7 +475,15 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
         <button class="pact" id="pdDelete"><span>Delete project</span></button>
       </div>
       <!-- Chat straight from the project page, claude.ai style -->
+      <div class="docchips" id="pdChips" style="margin-top:14px"></div>
       <div class="pp-ask">
+        <div class="plusmenu" id="pdPlusMenu">
+          <button type="button" id="pdmSp"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg> Attach SharePoint Files</button>
+          <button type="button" id="pdmAcc"><svg viewBox="0 0 24 24"><path d="M3 20h18M5 20L12 4l3.5 8M12 20l3.5-8m0 0L19 20"/></svg> Attach Autodesk Files</button>
+          <button type="button" id="pdmLocal"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M21 15l-4.5-4.5L9 18"/></svg> Add Files &amp; Photos</button>
+          <button type="button" id="pdmTpl"><svg viewBox="0 0 24 24"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg> Use a scope template</button>
+        </div>
+        <button class="tool" id="pdPlus" title="Attach or use a template">+</button>
         <input id="pdAsk" placeholder="Start a chat in this project — ask about bids, scope, exhibits…">
         <button class="pact primary" id="pdAskGo">Chat</button>
       </div>
@@ -1016,13 +1025,24 @@ document.getElementById('pdWork').addEventListener('click',()=>{
 // Chat straight from the project page: first message sends immediately in a fresh project chat
 function pdStartChat(){
   const text=document.getElementById('pdAsk').value.trim();
+  // Attachments staged on the project page ride into the new chat (newChat clears them, so hold on)
+  const stagedD=attachedDocs.splice(0), stagedI=attachedImages.splice(0);
   newChat(); // clean slate first — newChat clears any project
   setActiveProject(curProj.name);
+  attachedDocs.push(...stagedD); attachedImages.push(...stagedI); renderDocChips();
   if(text){ document.getElementById('pdAsk').value=''; document.getElementById('ask').value=text; sendMsg(); }
   else document.getElementById('ask').focus();
 }
 document.getElementById('pdAskGo').addEventListener('click',pdStartChat);
 document.getElementById('pdAsk').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); pdStartChat(); } });
+// + menu on the project composer — same actions as the chat composer
+const pdPlusMenu=document.getElementById('pdPlusMenu');
+document.getElementById('pdPlus').addEventListener('click',e=>{ e.stopPropagation(); pdPlusMenu.classList.toggle('open'); });
+document.addEventListener('click',e=>{ if(!pdPlusMenu.contains(e.target)) pdPlusMenu.classList.remove('open'); });
+document.getElementById('pdmSp').addEventListener('click',()=>{ pdPlusMenu.classList.remove('open'); document.getElementById('navSharepoint').click(); });
+document.getElementById('pdmAcc').addEventListener('click',()=>{ pdPlusMenu.classList.remove('open'); document.getElementById('navAutodesk').click(); });
+document.getElementById('pdmLocal').addEventListener('click',()=>{ pdPlusMenu.classList.remove('open'); document.getElementById('localFiles').click(); });
+document.getElementById('pdmTpl').addEventListener('click',()=>{ pdPlusMenu.classList.remove('open'); openTemplates(curProj?.name); });
 // Click the title to rename (claude.ai style); renames carry the project's chats along server-side
 const pdNameEl=document.getElementById('pdName');
 pdNameEl.addEventListener('click',()=>{
@@ -1189,23 +1209,27 @@ async function fbFolder(projId,folderId){
   fbRender(items);
 }
 function renderDocChips(){
-  const box=document.getElementById('docchips'); box.innerHTML='';
-  const chip=(icon,name,onRemove)=>{
-    const c=document.createElement('span'); c.className='docchip';
-    c.innerHTML=icon+' '+name.replace(/</g,'&lt;')+' ';
-    const x=document.createElement('button'); x.textContent='×';
-    x.addEventListener('click',onRemove);
-    c.appendChild(x); box.appendChild(c);
-  };
-  attachedDocs.forEach((d,i)=>chip(ICONS.file,d.name,()=>{attachedDocs.splice(i,1);renderDocChips();}));
-  // Images render as thumbnails, claude.ai style
-  attachedImages.forEach((im,i)=>{
-    const t=document.createElement('span'); t.className='imgthumb';
-    const img=document.createElement('img'); img.src=`data:${im.media_type};base64,${im.data}`; img.alt=im.name; img.title=im.name;
-    const x=document.createElement('button'); x.textContent='×'; x.title='Remove';
-    x.addEventListener('click',()=>{attachedImages.splice(i,1);renderDocChips();});
-    t.appendChild(img); t.appendChild(x); box.appendChild(t);
-  });
+  // Staged attachments show in BOTH composers: the chat one and the project page's
+  for(const boxId of ['docchips','pdChips']){
+    const box=document.getElementById(boxId); if(!box)continue;
+    box.innerHTML='';
+    const chip=(icon,name,onRemove)=>{
+      const c=document.createElement('span'); c.className='docchip';
+      c.innerHTML=icon+' '+name.replace(/</g,'&lt;')+' ';
+      const x=document.createElement('button'); x.textContent='×';
+      x.addEventListener('click',onRemove);
+      c.appendChild(x); box.appendChild(c);
+    };
+    attachedDocs.forEach((d,i)=>chip(ICONS.file,d.name,()=>{attachedDocs.splice(i,1);renderDocChips();}));
+    // Images render as thumbnails, claude.ai style
+    attachedImages.forEach((im,i)=>{
+      const t=document.createElement('span'); t.className='imgthumb';
+      const img=document.createElement('img'); img.src=`data:${im.media_type};base64,${im.data}`; img.alt=im.name; img.title=im.name;
+      const x=document.createElement('button'); x.textContent='×'; x.title='Remove';
+      x.addEventListener('click',()=>{attachedImages.splice(i,1);renderDocChips();});
+      t.appendChild(img); t.appendChild(x); box.appendChild(t);
+    });
+  }
 }
 // Export a reply as a branded Word / PDF document (client-facing letters)
 function addExportTools(el,markdown){
@@ -1559,6 +1583,7 @@ const plusMenu=document.getElementById('plusMenu'), tplOverlay=document.getEleme
 const tplEls=Object.fromEntries(['tplTitle','tplHint','tplStep1','tplStep2','tplStep3','tplList','tplEdits','tplStatus','tplBack','tplFill','tplPdf','tplOd','tplSp','tplXlsx']
   .map(id=>[id,document.getElementById(id)]));
 let tplState={step:1,chosen:null,fillId:null,edits:[]};
+let tplProject=null; // the project the templates modal is working for (ctx chip or project page)
 function activeProject(){ return document.getElementById('ctx').classList.contains('show') ? document.getElementById('ctxName').textContent : null; }
 document.getElementById('attachBtn').addEventListener('click',e=>{ e.stopPropagation(); plusMenu.classList.toggle('open'); });
 document.addEventListener('click',e=>{ if(!plusMenu.contains(e.target)) plusMenu.classList.remove('open'); });
@@ -1618,9 +1643,10 @@ function tplShow(step){
     :step===2?'Add what you have — form fields, pasted text, or both. Straticon ai fills the template.'
     :'Review the proposed values — edit anything, then choose an output.';
 }
-async function openTemplates(){
-  const project=activeProject();
+async function openTemplates(projectOverride){
+  const project=projectOverride||activeProject();
   if(!project){ alert('Pick a project first (Projects → "Work in this project") so the right templates show.'); return; }
+  tplProject=project;
   tplOverlay.classList.add('show'); tplShow(1);
   tplEls.tplTitle.textContent='Scope templates · '+project;
   tplEls.tplList.innerHTML=''; tplEls.tplStatus.textContent='Loading templates…';
@@ -1658,7 +1684,7 @@ tplEls.tplFill.addEventListener('click',async()=>{
   tplEls.tplFill.disabled=true; tplEls.tplStatus.textContent='Straticon ai is filling the template… (can take a minute)';
   try{
     const r=await fetch('/api/templates/fill',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({project:activeProject(),driveId:f.driveId,itemId:f.itemId,name:f.name,info:parts.join('\n')})});
+      body:JSON.stringify({project:tplProject||activeProject(),driveId:f.driveId,itemId:f.itemId,name:f.name,info:parts.join('\n')})});
     const d=await r.json(); if(d.error)throw new Error(d.error);
     tplState.fillId=d.fillId; tplState.edits=d.edits;
     const esc3=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1675,7 +1701,7 @@ function tplCollectEdits(){
   return tplState.edits;
 }
 function tplSuggestName(){
-  const f=tplState.chosen, proj=activeProject()||'Project';
+  const f=tplState.chosen, proj=tplProject||activeProject()||'Project';
   const d=new Date(), mmddyy=String(d.getMonth()+1).padStart(2,'0')+'.'+String(d.getDate()).padStart(2,'0')+'.'+String(d.getFullYear()).slice(2);
   const trade=(f&&f.label)?f.label.split(' — ')[1]||'Scope':'Scope';
   return `${proj}_${trade}_Scope_${mmddyy}`;
