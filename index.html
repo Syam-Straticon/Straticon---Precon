@@ -212,7 +212,7 @@ body.sidebar-pinned .shell{grid-template-columns:268px 1fr}
 .pk-bar i{display:block;height:100%;background:var(--accent);border-radius:4px;transition:width .3s}
 .pk-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px;margin:10px 0 8px}
 .pk-tile{position:relative;border:1px solid var(--line-soft);background:var(--surface);border-radius:10px;padding:10px;min-height:72px;display:flex;flex-direction:column;gap:6px}
-.pk-tile svg{width:15px;height:15px;color:var(--faint)}
+.pk-tile svg{width:15px;height:15px;color:var(--faint);fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .pk-tile b{font:600 .73rem var(--ui);color:var(--fg);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}
 .pk-tile small{color:var(--faint);font-size:.68rem;margin-top:auto}
 .pk-tile button{position:absolute;top:3px;right:3px;background:none;border:0;color:var(--faint);cursor:pointer;font-size:.9rem;line-height:1;padding:4px 6px;border-radius:6px;opacity:0}
@@ -557,10 +557,13 @@ body.tempmode .temppill{color:var(--accent);border-style:dashed;border-color:var
           <div class="pp-cap" id="pdCapTxt" style="display:none"></div>
           <div id="pdFiles"></div>
           <div class="addrow" style="justify-content:flex-start;gap:8px">
-            <button type="button" class="pact" id="pdAddFile">+ Add knowledge file</button>
+            <button type="button" class="pact" id="pdAddFile">+ Add files</button>
+            <button type="button" class="pact" id="pdAddFolder">+ Add folder</button>
             <button type="button" class="pact primary" id="pdSave">Save</button>
           </div>
           <input type="file" id="pdFileInput" multiple style="display:none" accept=".pdf,.xlsx,.xlsm,.xls,.docx,.msg,.txt,.md,.csv,.json,.log">
+          <input type="file" id="pdFolderInput" webkitdirectory style="display:none">
+          <div class="pp-cap" id="pdIngest" style="display:none"></div>
         </div>
       </div>
       <div class="pp-sec" style="margin-top:26px">
@@ -981,22 +984,36 @@ async function loadProjectsPage(){
 }
 document.getElementById('ppSearch').addEventListener('input',()=>loadProjectsPage());
 document.getElementById('ppBack').addEventListener('click',loadProjectsPage);
+const KN_MAX=100, KN_FILE_CHARS=150000, KN_BUDGET=10*150000;
+function knSize(n){ return n>=1000?Math.round(n/1000)+'k chars':n+' chars'; }
 function renderPdFiles(){
   const box=document.getElementById('pdFiles'); box.innerHTML='';
   const bar=document.getElementById('pdCapBar'), txt=document.getElementById('pdCapTxt');
   const files=curProj.knowledge||[];
-  // Capacity bar, claude.ai style: % of the 10×150k-char knowledge budget
+  // Capacity bar, claude.ai style: % of the knowledge character budget
   const used=files.reduce((a,k)=>a+(k.text||'').length,0);
-  const pct=Math.min(100,Math.max(files.length?1:0,Math.round(used/(10*150000)*100)));
+  const pct=Math.min(100,Math.max(files.length?1:0,Math.round(used/KN_BUDGET*100)));
   bar.style.display=txt.style.display=files.length?'':'none';
   bar.firstElementChild.style.width=pct+'%';
-  txt.textContent=pct+'% of project capacity used · '+files.length+'/10 files';
+  txt.textContent=pct+'% of project capacity used · '+files.length+'/'+KN_MAX+' files';
   if(!files.length){ box.innerHTML='<div class="pp-empty">No knowledge files — add scope baselines, owner requirements, naming rules…</div>'; return; }
   const grid=document.createElement('div'); grid.className='pk-tiles';
-  files.forEach((k,i)=>{
+  // Files added from a folder keep "Folder/path" names and show as ONE folder tile, claude.ai style
+  const groups={}, loose=[];
+  files.forEach((k,i)=>{ const s=k.name.indexOf('/'); if(s>0)(groups[k.name.slice(0,s)]=groups[k.name.slice(0,s)]||[]).push(i); else loose.push(i); });
+  Object.keys(groups).forEach(g=>{
+    const idx=groups[g], chars=idx.reduce((a,i)=>a+(files[i].text||'').length,0);
     const t=document.createElement('div'); t.className='pk-tile';
-    const kb=(k.text||'').length;
-    t.innerHTML=ICONS.file+'<b>'+esc(k.name)+'</b><small>'+(kb>=1000?Math.round(kb/1000)+'k chars':kb+' chars')+'</small>';
+    t.title=idx.map(i=>files[i].name.slice(g.length+1)).join('\n');
+    t.innerHTML=ICONS.folder+'<b>'+esc(g)+'</b><small>'+idx.length+' item'+(idx.length===1?'':'s')+' · '+knSize(chars)+'</small>';
+    const x=document.createElement('button'); x.textContent='×'; x.title='Remove folder from knowledge';
+    x.addEventListener('click',()=>{ idx.slice().sort((a,b)=>b-a).forEach(i=>curProj.knowledge.splice(i,1)); renderPdFiles(); });
+    t.appendChild(x); grid.appendChild(t);
+  });
+  loose.forEach(i=>{
+    const k=files[i];
+    const t=document.createElement('div'); t.className='pk-tile';
+    t.innerHTML=ICONS.file+'<b>'+esc(k.name)+'</b><small>'+knSize((k.text||'').length)+'</small>';
     const x=document.createElement('button'); x.textContent='×'; x.title='Remove from knowledge';
     x.addEventListener('click',()=>{ curProj.knowledge.splice(i,1); renderPdFiles(); });
     t.appendChild(x); grid.appendChild(t);
@@ -1064,6 +1081,7 @@ async function openProjectDetail(id){
   document.getElementById('pdInstr').value=curProj.instructions||'';
   const dl=document.getElementById('pdDelete'); dl.querySelector('span').textContent='Delete project'; dl.dataset.armed='';
   pdMembers=null; pdMetaText(); loadShareMembers(); // "Created by · Shared with N" fills in async
+  document.getElementById('pdIngest').style.display='none';
   renderPdFiles();
   // Chats belonging to this project
   const cbox=document.getElementById('pdChats'); cbox.innerHTML='';
@@ -1238,23 +1256,36 @@ document.getElementById('pdDelete').addEventListener('click',async e=>{
 });
 // Knowledge files: same extraction pipeline as local attachments
 document.getElementById('pdAddFile').addEventListener('click',()=>document.getElementById('pdFileInput').click());
-document.getElementById('pdFileInput').addEventListener('change',async e=>{
-  const files=[...e.target.files]; e.target.value='';
-  for(const f of files){
-    if((curProj.knowledge||[]).length>=10) break;
+document.getElementById('pdAddFolder').addEventListener('click',()=>document.getElementById('pdFolderInput').click());
+// Shared ingest for files AND whole folders (claude.ai style): extract each, show live progress
+async function ingestKnowledge(files,asFolder){
+  const st=document.getElementById('pdIngest');
+  const supported=files.filter(f=>!/(^|\/)\./.test(f.webkitRelativePath||f.name)&&/\.(pdf|xlsx|xlsm|xls|docx|msg|txt|md|csv|json|log)$/i.test(f.name));
+  let added=0, skipped=files.length-supported.length;
+  st.style.display='';
+  for(let i=0;i<supported.length;i++){
+    const f=supported[i];
+    if((curProj.knowledge||[]).length>=KN_MAX){ skipped+=supported.length-i; break; }
+    st.textContent='Adding '+(i+1)+'/'+supported.length+' — '+f.name+'…';
     try{
       let text;
-      if(/\.(txt|md|csv|json|log)$/i.test(f.name)) text=(await f.text()).slice(0,150000);
-      else if(/\.(pdf|xlsx|xlsm|xls|docx|msg)$/i.test(f.name)){
+      if(/\.(txt|md|csv|json|log)$/i.test(f.name)) text=(await f.text()).slice(0,KN_FILE_CHARS);
+      else{
         const r=await fetch('/api/extract?name='+encodeURIComponent(f.name),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});
-        const d=await r.json(); if(d.error) continue;
-        text=d.text.slice(0,150000);
+        const d=await r.json(); if(d.error){ skipped++; continue; }
+        text=d.text.slice(0,KN_FILE_CHARS);
       }
-      curProj.knowledge.push({name:f.name,text});
-    }catch(_){}
+      curProj.knowledge.push({name:asFolder&&f.webkitRelativePath?f.webkitRelativePath:f.name,text});
+      added++; renderPdFiles();
+    }catch(_){ skipped++; }
   }
+  st.textContent='Added '+added+' file'+(added===1?'':'s')
+    +(skipped?' · '+skipped+' skipped (hidden, unsupported, failed, or over the '+KN_MAX+'-file cap)':'')
+    +' — click Save to keep';
   renderPdFiles();
-});
+}
+document.getElementById('pdFileInput').addEventListener('change',e=>{ const f=[...e.target.files]; e.target.value=''; ingestKnowledge(f,false); });
+document.getElementById('pdFolderInput').addEventListener('change',e=>{ const f=[...e.target.files]; e.target.value=''; ingestKnowledge(f,true); });
 // Create-project dialog
 const addForm=document.getElementById('addForm'), overlay=document.getElementById('overlay');
 function closeModal(){ overlay.classList.remove('show'); addForm.reset(); }

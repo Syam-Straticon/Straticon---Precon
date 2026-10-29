@@ -582,9 +582,16 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     if (project) {
       const rec = loadProjects().find(p => p.name === project);
       if (rec?.instructions) sys += `\n\nPROJECT INSTRUCTIONS (set by the team for ${project} — follow them):\n${rec.instructions}`;
+      // Folder uploads can hold up to 100 files, so cap what rides in the prompt (~150k tokens)
+      let knBudget = 600_000;
+      const omitted: string[] = [];
       for (const k of rec?.knowledge ?? []) {
-        sys += `\n\n--- PROJECT KNOWLEDGE: ${k.name} ---\n${k.text}\n--- END OF ${k.name} ---`;
+        if (k.text.length <= knBudget) {
+          sys += `\n\n--- PROJECT KNOWLEDGE: ${k.name} ---\n${k.text}\n--- END OF ${k.name} ---`;
+          knBudget -= k.text.length;
+        } else omitted.push(k.name);
       }
+      if (omitted.length) sys += `\n\nNOTE: ${omitted.length} more knowledge file(s) did not fit in context: ${omitted.join(', ')}. If one is needed, find the original on SharePoint/ACC with the file tools.`;
     }
     for (const d of docs ?? []) {
       sys += `\n\n--- ATTACHED DOCUMENT: ${d.name} ---\n${d.text.slice(0, 150_000)}\n--- END OF ${d.name} ---`;
@@ -821,7 +828,7 @@ app.post('/api/projects', (req: Request, res: Response) => {
   }
   if (description !== undefined) p.description = String(description).slice(0, 500);
   if (instructions !== undefined) p.instructions = String(instructions).slice(0, 20_000);
-  if (knowledge !== undefined) p.knowledge = knowledge.slice(0, 10).map(k => ({ name: String(k.name).slice(0, 200), text: String(k.text).slice(0, 150_000) }));
+  if (knowledge !== undefined) p.knowledge = knowledge.slice(0, 100).map(k => ({ name: String(k.name).slice(0, 300), text: String(k.text).slice(0, 150_000) }));
   p.updatedAt = now;
   saveProjects(all);
   res.json(p);
