@@ -1,0 +1,10 @@
+.env
+node_modules/
+.chats/
+.cache/
+.DS_Store
+.projects.json
+.users.json
+.sessions.json
+.gendocs/
+.bidrecords/
